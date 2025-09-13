@@ -24,7 +24,7 @@ jobs:
       - name: Create credentials files from secrets
         run: |
           echo '${{ secrets.GDRIVE_CREDENTIALS }}' > credentials.json
-          echo '${{ secrets.GDRIVE_TOKEN }}' > token.pickle
+          echo '${{ secrets.GDRIVE_TOKEN }}' | base64 --decode > token.pickle
 
       - name: Run scraper script
         run: python pfr_scraper.py

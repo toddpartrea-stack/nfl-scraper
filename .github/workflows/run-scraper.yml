@@ -1,0 +1,30 @@
+name: Run NFL Scraper
+
+on:
+  schedule:
+    # Runs at 9 AM UTC on Tuesday and Saturday
+    - cron: '0 9 * * 2,6'
+  workflow_dispatch: # Allows you to run it manually
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create credentials files from secrets
+        run: |
+          echo '${{ secrets.GDRIVE_CREDENTIALS }}' > credentials.json
+          echo '${{ secrets.GDRIVE_TOKEN }}' > token.pickle
+
+      - name: Run scraper script
+        run: python pfr_scraper.py

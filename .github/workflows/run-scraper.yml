@@ -1,13 +1,13 @@
-name: Run NFL Scraper
+name: Run NFL Data and Prediction Pipeline
 
 on:
   schedule:
-    # Runs at 9 AM UTC on Tuesday and Saturday
-    - cron: '0 13 * * *'
+    # Runs daily at 14:00 UTC (10 AM EDT)
+    - cron: '0 14 * * *'
   workflow_dispatch: # Allows you to run it manually
 
 jobs:
-  scrape:
+  run-pipeline:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -24,7 +24,13 @@ jobs:
       - name: Create credentials files from secrets
         run: |
           echo '${{ secrets.GDRIVE_CREDENTIALS }}' > credentials.json
-          echo '${{ secrets.GDRIVE_TOKEN }}' | base64 --decode > token.pickle
+          echo '${{ secrets.GDRIVE_TOKEN_BASE64 }}' | base64 --decode > token.pickle
 
-      - name: Run scraper script
+      - name: Run Scraper Script to get fresh data
         run: python pfr_scraper.py
+
+      # --- NEW STEP ---
+      - name: Run Prediction Script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python run_predictions.py

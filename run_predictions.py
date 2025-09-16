@@ -30,7 +30,24 @@ def get_gspread_client():
 
 # --- Function to write predictions to the sheet ---
 def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, prediction_text):
-    # ... (function is unchanged)
+    try:
+        sheet_name = "Predictions"
+        try:
+            worksheet = spreadsheet.worksheet(sheet_name)
+        except gspread.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1, cols=6)
+            worksheet.update('A1:F1', [['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
+        
+        justification = prediction_text.strip()
+        winner_match = re.search(r"Predicted Winner:\s*(.*)", prediction_text)
+        score_match = re.search(r"Predicted Final Score:\s*(.*)", prediction_text)
+        winner = winner_match.group(1).strip() if winner_match else "See Justification"
+        score = score_match.group(1).strip() if score_match else "See Justification"
+        
+        worksheet.append_row([week, away_team, home_team, winner, score, justification])
+        print(f"  -> ✅ Prediction for {away_team} @ {home_team} written to sheet.")
+    except Exception as e:
+        print(f"  -> ❌ Error writing prediction to sheet: {e}")
 
 # --- Main execution block ---
 def run_predictions():
@@ -44,7 +61,6 @@ def run_predictions():
         print(f"❌ An error occurred opening the sheet: {e}")
         return
 
-    # --- CORRECTED: Initialize dataframes dictionary ---
     dataframes = {}
     print("\nLoading and cleaning data from Google Sheet tabs...")
     try:
@@ -57,9 +73,8 @@ def run_predictions():
                 print(f"  -> Loaded tab: {title}")
     except Exception as e:
         print(f"❌ Error loading sheet: {e}")
-        # The script will continue but likely fail the next check
+        return
         
-    # Configure Gemini API
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel('gemini-1.5-flash')
@@ -68,69 +83,85 @@ def run_predictions():
         print(f"❌ Error configuring Gemini API: {e}")
         return
 
-    # --- AUTOMATED MATCHUP ANALYSIS ---
     required_tabs = ['Schedule', 'D_Overall', 'Injuries', 'team_match', 'FPI']
-    if all(tab in dataframes for tab in required_tabs):
+    if not all(tab in dataframes for tab in required_tabs):
+        print(f"\n❌ Could not find all necessary data tabs. Found: {list(dataframes.keys())}")
+        return
+    
+    try:
+        predictions_sheet = spreadsheet.worksheet("Predictions")
+        predictions_sheet.clear()
+        predictions_sheet.update('A1:F1', [['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
+        print("\nCleared old data from 'Predictions' tab.")
+    except gspread.WorksheetNotFound:
+        pass
+
+    team_map_df = dataframes['team_match']
+    abbr_to_full = pd.Series(team_map_df['Full Name'].values, index=team_map_df['Abbreviation']).to_dict()
+    full_to_abbr = pd.Series(team_map_df['Abbreviation'].values, index=team_map_df['Full Name']).to_dict()
+
+    for name, df in dataframes.items():
+        team_col_found = next((col for col in df.columns if 'Tm' in col or 'Team' in col or 'Winner/tie' in col or 'Loser/tie' in col), None)
+        if team_col_found:
+            df['Team_Full'] = df[team_col_found].map(abbr_to_full).fillna(df[team_col_found])
+
+    schedule_df = dataframes['Schedule']
+    schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
+    season_start_date = datetime(2025, 9, 2)
+    today = datetime.now()
+    days_since_start = (today - season_start_date).days
+    current_week = (days_since_start // 7) + 1
+    
+    this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
+    
+    print(f"\nFound {len(this_weeks_games)} games for Week {current_week}. Starting analysis...")
+    
+    for index, game in this_weeks_games.iterrows():
+        home_team_full = game['Home_Team']
+        away_team_full = game['Away_Team']
+
+        print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
+
+        fpi_data = dataframes['FPI']
+        home_fpi = fpi_data[fpi_data['TEAM'].str.contains(home_team_full, case=False, na=False)]
+        away_fpi = fpi_data[fpi_data['TEAM'].str.contains(away_team_full, case=False, na=False)]
         
-        # ... (Clearing old predictions and standardizing team names are the same)
+        team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
+        injury_data = dataframes['Injuries'][dataframes['Injuries']['Team_Full'].isin([home_team_full, away_team_full])]
         
-        # ... (Finding the current week's games is the same)
+        matchup_prompt = f"""
+        Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
+        Use all the data provided below, especially the ESPN FPI, which is a strong indicator of team strength.
+
+        ---
+        ## {home_team_full} (Home) Data
+        - **ESPN FPI:** {home_fpi.to_string()}
+        - **Defense Stats:** {team_defense_data[team_defense_data['Team_Full'] == home_team_full].to_string()}
+        - **Injuries:** {injury_data[injury_data['Team_Full'] == home_team_full].to_string()}
+
+        ## {away_team_full} (Away) Data
+        - **ESPN FPI:** {away_fpi.to_string()}
+        - **Defense Stats:** {team_defense_data[team_defense_data['Team_Full'] == away_team_full].to_string()}
+        - **Injuries:** {injury_data[injury_data['Team_Full'] == away_team_full].to_string()}
+        ---
+
+        Based on the structured data above, provide the following in a clear format:
+        1. **Predicted Winner:** [Team Name]
+        2. **Predicted Final Score:** [Away Team Score] - [Home Team Score]
+        3. **Justification:** [A brief justification for your prediction based on the data.]
+        """
         
-        for index, game in this_weeks_games.iterrows():
-            home_team_full = game['Home_Team']
-            away_team_full = game['Away_Team']
-
-            print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
-
-            # --- Prepare data for the prompt, NOW INCLUDING FPI ---
-            fpi_data = dataframes['FPI']
-            home_fpi = fpi_data[fpi_data['TEAM'].str.contains(home_team_full, case=False, na=False)]
-            away_fpi = fpi_data[fpi_data['TEAM'].str.contains(away_team_full, case=False, na=False)]
+        try:
+            response = model.generate_content(matchup_prompt)
+            print("--- PREDICTION (Raw Text) ---")
+            print(response.text)
             
-            team_defense_data = dataframes['D_Overall'] # Simplified for brevity
-            home_def_data = team_defense_data[team_defense_data['Team'] == home_team_full]
-            away_def_data = team_defense_data[team_defense_data['Team'] == away_team_full]
-            
-            injury_data = dataframes['Injuries'] # Simplified for brevity
-            home_injury_data = injury_data[injury_data['Team'] == home_team_full]
-            away_injury_data = injury_data[injury_data['Team'] == away_team_full]
-            
-            # --- UPDATED PROMPT ---
-            matchup_prompt = f"""
-            Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
-            Use all the data provided below, especially the ESPN FPI, which is a strong indicator of team strength.
+            write_prediction_to_sheet(spreadsheet, current_week, away_team_full, home_team_full, response.text)
 
-            ---
-            ## {home_team_full} (Home) Data
-            - **ESPN FPI:** {home_fpi.to_string()}
-            - **Defense Stats:** {home_def_data.to_string()}
-            - **Injuries:** {home_injury_data.to_string()}
-
-            ## {away_team_full} (Away) Data
-            - **ESPN FPI:** {away_fpi.to_string()}
-            - **Defense Stats:** {away_def_data.to_string()}
-            - **Injuries:** {away_injury_data.to_string()}
-            ---
-
-            Based on the structured data above, provide the following in a clear format:
-            1. **Predicted Winner:** [Team Name]
-            2. **Predicted Final Score:** [Away Team Score] - [Home Team Score]
-            3. **Justification:** [A brief justification for your prediction based on the data.]
-            """
-            
-            try:
-                response = model.generate_content(matchup_prompt)
-                print("--- PREDICTION (Raw Text) ---")
-                print(response.text)
-                
-                write_prediction_to_sheet(spreadsheet, current_week, away_team_full, home_team_full, response.text)
-
-            except Exception as e:
-                print(f"Could not generate prediction for this matchup: {e}")
-            
-            time.sleep(10)
-    else:
-        print(f"\n❌ Could not find all necessary data tabs to make a prediction.")
+        except Exception as e:
+            print(f"Could not generate prediction for this matchup: {e}")
+        
+        time.sleep(10)
 
 if __name__ == "__main__":
     run_predictions()

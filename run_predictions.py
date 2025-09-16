@@ -107,7 +107,9 @@ def run_predictions():
 
     schedule_df = dataframes['Schedule']
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
-    season_start_date = datetime(2025, 9, 2)
+    
+    # CORRECTED: The variable definition was missing
+    calculation_start_date = datetime(2025, 9, 2)
     today = datetime.now()
     days_since_start = (today - calculation_start_date).days
     current_week = (days_since_start // 7) + 1

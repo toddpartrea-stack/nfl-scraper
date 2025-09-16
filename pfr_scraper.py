@@ -1,20 +1,20 @@
-import requests
-import pandas as pd
+import google.generativeai as genai
 import gspread
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
+import pandas as pd
+from datetime import datetime
+import time
+import re
 import os
 import pickle
-import io
-from datetime import datetime
+from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import InstalledAppFlow
 
 # --- CONFIGURATION ---
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
-YEAR = 2025
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- Google Sheets Authentication (Unchanged) ---
+# --- Google Sheets Authentication ---
 def get_gspread_client():
     creds = None
     if os.path.exists('token.pickle'):
@@ -24,111 +24,115 @@ def get_gspread_client():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open('token.pickle', 'wb') as token:
-            pickle.dump(creds, token)
+            return None
     return gspread.authorize(creds)
 
-# --- Helper Function to Write to a Sheet Tab (Unchanged) ---
-def write_to_sheet(spreadsheet, sheet_name, dataframe):
-    print(f"  -> Writing data to '{sheet_name}' tab...")
-    if dataframe.empty:
-        print(f"  -> Data is empty for {sheet_name}.")
-        return
+# --- Function to write predictions to the sheet ---
+def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, prediction_text):
+    try:
+        sheet_name = "Predictions"
+        try:
+            worksheet = spreadsheet.worksheet(sheet_name)
+        except gspread.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1, cols=6)
+            worksheet.update('A1:F1', [['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification']])
         
-    try:
-        worksheet = spreadsheet.worksheet(sheet_name)
-        worksheet.clear()
-    except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1, cols=len(dataframe.columns))
-    
-    dataframe = dataframe.astype(str).fillna('')
-    data_to_upload = [dataframe.columns.values.tolist()] + dataframe.values.tolist()
-    worksheet.update(data_to_upload, value_input_option='USER_ENTERED')
-    print(f"  -> Successfully wrote {len(dataframe)} rows.")
-    
-# --- Advanced Data Cleaning Helper (Unchanged) ---
-def clean_pfr_table(df):
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = ['_'.join(col).strip() for col in df.columns.values]
-    if 'Rk' in df.columns:
-        df = df[df['Rk'] != 'Rk'].copy()
-    df = df.dropna(how='all').reset_index(drop=True)
-    return df
+        winner_match = re.search(r"Predicted Winner:\s*(.*)", prediction_text)
+        score_match = re.search(r"Predicted Final Score:\s*(.*)", prediction_text)
+        justification_match = re.search(r"Justification:\s*(.*)", prediction_text, re.IGNORECASE)
+        winner = winner_match.group(1).strip() if winner_match else "N/A"
+        score = score_match.group(1).strip() if score_match else "N/A"
+        justification = justification_match.group(1).strip() if justification_match else "N/A"
+        
+        worksheet.append_row([week, away_team, home_team, winner, score, justification])
+        print(f"  -> ✅ Prediction for {away_team} @ {home_team} written to sheet.")
+    except Exception as e:
+        print(f"  -> ❌ Error writing prediction to sheet: {e}")
 
-# --- Main Script ---
-if __name__ == "__main__":
-    print("Authenticating with Google Sheets...")
+# --- Main execution block ---
+def run_predictions():
+    print("Authenticating...")
     gc = get_gspread_client()
-    try:
-        spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
-    except Exception as e:
-        print(f"❌ An error occurred opening the sheet: {e}")
-        exit()
-
-    # --- DYNAMIC INJURY WEEK CALCULATION ---
-    season_start_date = datetime(YEAR, 9, 4)
-    today = datetime.now()
-    days_since_start = (today - season_start_date).days
-    current_week = (days_since_start // 7) + 1
-    injury_table_title = f"Week {current_week} Injuries"
-    print(f"Calculated current NFL week: {current_week}. Looking for table: '{injury_table_title}'")
+    if not gc: return
+    spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
     
-    # --- NEW: Scrape ESPN FPI ---
-    print("\n--- Scraping ESPN FPI ---")
+    dataframes = {}
+    print("\nLoading data...")
     try:
-        fpi_url = "https://www.espn.com/nfl/fpi"
-        fpi_df = pd.read_html(fpi_url)[0]
-        fpi_df.rename(columns={fpi_df.columns[0]: 'Team'}, inplace=True)
-        fpi_df['Team'] = fpi_df['Team'].str.replace(r'^\d+', '', regex=True).str.strip()
-        write_to_sheet(spreadsheet, "FPI", fpi_df)
+        for worksheet in spreadsheet.worksheets():
+            title = worksheet.title
+            if title.lower() in ['predictions']: continue
+            data = worksheet.get_all_values()
+            if data:
+                dataframes[title] = pd.DataFrame(data[1:], columns=data[0])
+                print(f"  -> Loaded tab: {title}")
     except Exception as e:
-        print(f"❌ Could not process FPI Stats: {e}")
+        print(f"❌ Error loading sheet: {e}")
+        
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    print("\n✅ Gemini API configured.")
 
-    # --- DEFENSE ---
-    print("\n--- Scraping DEFENSE ---")
-    try:
-        url = f"https://www.pro-football-reference.com/years/{YEAR}/opp.htm"
-        all_tables = pd.read_html(url)
-        if len(all_tables) > 0: write_to_sheet(spreadsheet, "D_Overall", clean_pfr_table(all_tables[0]))
-    except Exception as e: print(f"❌ Could not process Defensive Stats: {e}")
+    required_tabs = ['Schedule', 'FPI']
+    if all(tab in dataframes for tab in required_tabs):
+        
+        try:
+            predictions_sheet = spreadsheet.worksheet("Predictions")
+            predictions_sheet.clear()
+            predictions_sheet.update('A1:F1', [['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification']])
+        except gspread.WorksheetNotFound:
+            pass
 
-    # --- OFFENSE (TEAM) ---
-    print("\n--- Scraping TEAM OFFENSE ---")
-    try:
-        url = f"https://www.pro-football-reference.com/years/{YEAR}/"
-        team_offense_df = pd.read_html(url, match="Team Offense")[0]
-        write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
-    except ValueError:
-        print("  -> Team Offense table not found (likely not posted for the new season yet).")
-    except Exception as e: print(f"❌ Could not process Team Offensive Stats: {e}")
-    
-    # --- OFFENSE (PLAYER) ---
-    print("\n--- Scraping PLAYER OFFENSE ---")
-    try:
-        passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]
-        rushing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/rushing.htm")[0]
-        receiving_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/receiving.htm")[0]
-        write_to_sheet(spreadsheet, "O_Player_Passing", clean_pfr_table(passing_df))
-        write_to_sheet(spreadsheet, "O_Player_Rushing", clean_pfr_table(rushing_df))
-        write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
-    except Exception as e: print(f"❌ Could not process Player Offensive Stats: {e}")
+        schedule_df = dataframes['Schedule']
+        schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
+        
+        calculation_start_date = datetime(2025, 9, 2)
+        today = datetime.now()
+        days_since_start = (today - calculation_start_date).days
+        current_week = (days_since_start // 7) + 1
+        
+        this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
+        
+        print(f"\nFound {len(this_weeks_games)} games for Week {current_week}. Starting analysis...")
+        
+        for index, game in this_weeks_games.iterrows():
+            home_team_full = game['Home_Team']
+            away_team_full = game['Away_Team']
 
-    # --- INJURIES ---
-    print("\n--- Scraping INJURIES ---")
-    try:
-        url = "https://www.pro-football-reference.com/players/injuries.htm"
-        injury_df = pd.read_html(url, match=injury_table_title)[0]
-        write_to_sheet(spreadsheet, "Injuries", clean_pfr_table(injury_df))
-    except Exception as e: print(f"❌ Could not process Injury Reports: {e}")
+            print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
 
-    # --- SCHEDULE ---
-    print("\n--- Scraping SCHEDULE ---")
-    try:
-        url = f"https://www.pro-football-reference.com/years/{YEAR}/games.htm"
-        schedule_df = pd.read_html(url)[0]
-        write_to_sheet(spreadsheet, "Schedule", clean_pfr_table(schedule_df))
-    except Exception as e: print(f"❌ Could not process Schedule: {e}")
+            fpi_data = dataframes['FPI']
+            home_fpi = fpi_data[fpi_data['Team'].str.contains(home_team_full, case=False, na=False)]
+            away_fpi = fpi_data[fpi_data['Team'].str.contains(away_team_full, case=False, na=False)]
+            
+            matchup_prompt = f"""
+            Act as an expert NFL analyst. Predict the outcome of {away_team_full} at {home_team_full}.
+            Use the provided ESPN FPI data as the primary basis for your prediction.
 
-    print("\n✅ Project script finished.")
+            ---
+            HOME TEAM ({home_team_full}) FPI DATA:
+            {home_fpi.to_string()}
+            ---
+            AWAY TEAM ({away_team_full}) FPI DATA:
+            {away_fpi.to_string()}
+            ---
+
+            Provide the following:
+            1. **Predicted Winner:** [Team Name]
+            2. **Predicted Final Score:** [Away Score] - [Home Score]
+            3. **Justification:** [Brief justification based on FPI.]
+            """
+            
+            try:
+                response = model.generate_content(matchup_prompt)
+                print(response.text)
+                write_prediction_to_sheet(spreadsheet, current_week, away_team_full, home_team_full, response.text)
+            except Exception as e:
+                print(f"Could not generate prediction: {e}")
+            
+            time.sleep(3)
+    else:
+        print(f"\n❌ Could not find all necessary data tabs. Found: {list(dataframes.keys())}")
+
+if __name__ == "__main__":
+    run_predictions()

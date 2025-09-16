@@ -116,9 +116,11 @@ def main():
     # Find the current week's games (Your working logic)
     schedule_df = dataframes['Schedule']
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
-    season_start_date = datetime(2025, 9, 4)
+
+    # This date is the Tuesday of Week 1, ensuring the new week starts on Tuesday.
+    calculation_start_date = datetime(2025, 9, 2)
     today = datetime.now()
-    days_since_start = (today - season_start_date).days
+    days_since_start = (today - calculation_start_date).days
     current_week = (days_since_start // 7) + 1
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week].dropna(subset=['Winner/tie', 'Loser/tie'])
     

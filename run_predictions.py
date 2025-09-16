@@ -14,7 +14,7 @@ SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- (Authentication and write_to_sheet functions are unchanged) ---
+# --- Google Sheets Authentication ---
 def get_gspread_client():
     creds = None
     if os.path.exists('token.pickle'):
@@ -28,31 +28,46 @@ def get_gspread_client():
             return None
     return gspread.authorize(creds)
 
+# --- Function to write predictions to the sheet ---
 def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, prediction_text):
     # ... (function is unchanged)
-    try:
-        sheet_name = "Predictions"
-        try:
-            worksheet = spreadsheet.worksheet(sheet_name)
-        except gspread.WorksheetNotFound:
-            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1, cols=6)
-            worksheet.update('A1:F1', [['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
-        
-        justification = prediction_text.strip()
-        winner_match = re.search(r"Predicted Winner:\s*(.*)", prediction_text)
-        score_match = re.search(r"Predicted Final Score:\s*(.*)", prediction_text)
-        winner = winner_match.group(1).strip() if winner_match else "See Justification"
-        score = score_match.group(1).strip() if score_match else "See Justification"
-        
-        worksheet.append_row([week, away_team, home_team, winner, score, justification])
-        print(f"  -> ✅ Prediction for {away_team} @ {home_team} written to sheet.")
-    except Exception as e:
-        print(f"  -> ❌ Error writing prediction to sheet: {e}")
 
 # --- Main execution block ---
 def run_predictions():
-    # ... (Authentication, sheet opening, and data loading are the same)
-    
+    print("Authenticating with Google Sheets...")
+    gc = get_gspread_client()
+    if not gc: return
+
+    try:
+        spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
+    except Exception as e:
+        print(f"❌ An error occurred opening the sheet: {e}")
+        return
+
+    # --- CORRECTED: Initialize dataframes dictionary ---
+    dataframes = {}
+    print("\nLoading and cleaning data from Google Sheet tabs...")
+    try:
+        for worksheet in spreadsheet.worksheets():
+            title = worksheet.title
+            if title.lower() in ['predictions']: continue
+            data = worksheet.get_all_values()
+            if data:
+                dataframes[title] = pd.DataFrame(data[1:], columns=data[0])
+                print(f"  -> Loaded tab: {title}")
+    except Exception as e:
+        print(f"❌ Error loading sheet: {e}")
+        # The script will continue but likely fail the next check
+        
+    # Configure Gemini API
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        print("\n✅ Gemini API configured.")
+    except Exception as e:
+        print(f"❌ Error configuring Gemini API: {e}")
+        return
+
     # --- AUTOMATED MATCHUP ANALYSIS ---
     required_tabs = ['Schedule', 'D_Overall', 'Injuries', 'team_match', 'FPI']
     if all(tab in dataframes for tab in required_tabs):

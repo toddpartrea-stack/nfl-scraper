@@ -75,16 +75,16 @@ if __name__ == "__main__":
     injury_table_title = f"Week {current_week} Injuries"
     print(f"Calculated current NFL week: {current_week}. Looking for table: '{injury_table_title}'")
     
-    # --- NEW: Scrape ESPN Football Power Index ---
-    print("\n--- Scraping ESPN FPI ---")
-    try:
-        fpi_url = "https://www.espn.com/nfl/fpi"
-        fpi_df = pd.read_html(fpi_url)[0]
-        # Clean the team names by removing the rank number
-        fpi_df['TEAM'] = fpi_df['TEAM'].str.replace(r'^\d+\s', '', regex=True).str.strip()
-        write_to_sheet(spreadsheet, "FPI", fpi_df)
-    except Exception as e:
-        print(f"❌ Could not process FPI Stats: {e}")
+ # --- Scrape ESPN Football Power Index ---
+print("\n--- Scraping ESPN FPI ---")
+try:
+    fpi_url = "https://www.espn.com/nfl/fpi"
+    # The first table on the page is the main FPI rankings
+    fpi_df = pd.read_html(fpi_url)[0]
+    # No cleaning is needed as pandas ignores the image tag
+    write_to_sheet(spreadsheet, "FPI", fpi_df)
+except Exception as e:
+    print(f"❌ Could not process FPI Stats: {e}")
 
     # --- DEFENSE ---
     print("\n--- Scraping DEFENSE ---")

@@ -6,6 +6,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 import os
 import pickle
+import io
 from datetime import datetime
 
 # --- CONFIGURATION ---
@@ -13,7 +14,7 @@ SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
 YEAR = 2025
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- Google Sheets Authentication ---
+# --- Google Sheets Authentication (Unchanged) ---
 def get_gspread_client():
     creds = None
     if os.path.exists('token.pickle'):
@@ -29,12 +30,13 @@ def get_gspread_client():
             pickle.dump(creds, token)
     return gspread.authorize(creds)
 
-# --- Helper Function to Write to a Sheet Tab ---
+# --- Helper Function to Write to a Sheet Tab (Unchanged) ---
 def write_to_sheet(spreadsheet, sheet_name, dataframe):
     print(f"  -> Writing data to '{sheet_name}' tab...")
     if dataframe.empty:
         print(f"  -> Data is empty for {sheet_name}.")
         return
+        
     try:
         worksheet = spreadsheet.worksheet(sheet_name)
         worksheet.clear()
@@ -45,52 +47,93 @@ def write_to_sheet(spreadsheet, sheet_name, dataframe):
     data_to_upload = [dataframe.columns.values.tolist()] + dataframe.values.tolist()
     worksheet.update(data_to_upload, value_input_option='USER_ENTERED')
     print(f"  -> Successfully wrote {len(dataframe)} rows.")
-
-# --- Helper Function to Clean Schedule ---
-def clean_schedule(df):
-    games = []
-    # Iterate through the raw data two rows at a time
-    for i in range(0, len(df), 2):
-        row1 = df.iloc[i]
-        row2 = df.iloc[i+1]
-        
-        if pd.isna(row1['Winner/tie']) or pd.isna(row2['Winner/tie']):
-            continue
-
-        if row1['Unnamed: 5'] == '@':
-            home_team = row2['Winner/tie']
-            away_team = row1['Winner/tie']
-        else:
-            home_team = row1['Winner/tie']
-            away_team = row2['Winner/tie']
-        
-        games.append({
-            'Week': row1['Week'], 'Day': row1['Day'], 'Date': row1['Date'],
-            'Time': row1['Time'], 'Away_Team': away_team, 'Home_Team': home_team
-        })
-    return pd.DataFrame(games)
+    
+# --- Advanced Data Cleaning Helper (Unchanged) ---
+def clean_pfr_table(df):
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = ['_'.join(col).strip() for col in df.columns.values]
+    if 'Rk' in df.columns:
+        df = df[df['Rk'] != 'Rk'].copy()
+    df = df.dropna(how='all').reset_index(drop=True)
+    return df
 
 # --- Main Script ---
 if __name__ == "__main__":
-    print("Authenticating...")
+    print("Authenticating with Google Sheets...")
     gc = get_gspread_client()
-    spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
-
-    print("\n--- Scraping ESPN FPI ---")
     try:
-        fpi_df = pd.read_html("https://www.espn.com/nfl/fpi")[0]
-        fpi_df.rename(columns={fpi_df.columns[0]: 'Team'}, inplace=True)
-        fpi_df['Team'] = fpi_df['Team'].str.replace(r'^\d+', '', regex=True).str.strip()
-        write_to_sheet(spreadsheet, "FPI", fpi_df)
-    except Exception as e: print(f"❌ Could not process FPI Stats: {e}")
+        spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
+    except Exception as e:
+        print(f"❌ An error occurred opening the sheet: {e}")
+        exit()
 
+    # --- NEW: Scrape TeamRankings.com Power Rankings ---
+    print("\n--- Scraping TeamRankings.com Power Rankings ---")
+    try:
+        url = "https://www.teamrankings.com/nfl/rankings/teams/"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'
+        }
+        all_tables = pd.read_html(url, header=0)
+        rankings_df = all_tables[0]
+        write_to_sheet(spreadsheet, "Power_Rankings", rankings_df)
+    except Exception as e:
+        print(f"❌ Could not process TeamRankings Stats: {e}")
+
+    # --- DYNAMIC INJURY WEEK CALCULATION ---
+    season_start_date = datetime(YEAR, 9, 4)
+    today = datetime.now()
+    days_since_start = (today - season_start_date).days
+    current_week = (days_since_start // 7) + 1
+    injury_table_title = f"Week {current_week} Injuries"
+    print(f"Calculated current NFL week: {current_week}. Looking for table: '{injury_table_title}'")
+    
+    # --- DEFENSE ---
+    print("\n--- Scraping DEFENSE ---")
+    try:
+        url = f"https://www.pro-football-reference.com/years/{YEAR}/opp.htm"
+        all_tables = pd.read_html(url)
+        if len(all_tables) > 0: write_to_sheet(spreadsheet, "D_Overall", clean_pfr_table(all_tables[0]))
+        if len(all_tables) > 2: write_to_sheet(spreadsheet, "D_Passing", clean_pfr_table(all_tables[2]))
+        if len(all_tables) > 3: write_to_sheet(spreadsheet, "D_Rushing", clean_pfr_table(all_tables[3]))
+    except Exception as e: print(f"❌ Could not process Defensive Stats: {e}")
+
+    # --- OFFENSE (TEAM) ---
+    print("\n--- Scraping TEAM OFFENSE ---")
+    try:
+        url = f"https://www.pro-football-reference.com/years/{YEAR}/"
+        try:
+            team_offense_df = pd.read_html(url, match="Team Offense")[0]
+            write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
+        except ValueError:
+            print("  -> Team Offense table not found (likely not posted for the new season yet).")
+    except Exception as e: print(f"❌ Could not process Team Offensive Stats: {e}")
+    
+    # --- OFFENSE (PLAYER) ---
+    print("\n--- Scraping PLAYER OFFENSE ---")
+    try:
+        passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]
+        rushing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/rushing.htm")[0]
+        receiving_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/receiving.htm")[0]
+        write_to_sheet(spreadsheet, "O_Player_Passing", clean_pfr_table(passing_df))
+        write_to_sheet(spreadsheet, "O_Player_Rushing", clean_pfr_table(rushing_df))
+        write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
+    except Exception as e: print(f"❌ Could not process Player Offensive Stats: {e}")
+
+    # --- INJURIES (CORRECTED URL) ---
+    print("\n--- Scraping INJURIES ---")
+    try:
+        url = "https://www.pro-football-reference.com/players/injuries.htm"
+        injury_df = pd.read_html(url, match=injury_table_title)[0]
+        write_to_sheet(spreadsheet, "Injuries", clean_pfr_table(injury_df))
+    except Exception as e: print(f"❌ Could not process Injury Reports: {e}")
+
+    # --- SCHEDULE ---
     print("\n--- Scraping SCHEDULE ---")
     try:
-        schedule_df_raw = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/games.htm")[0]
-        schedule_df_clean = clean_schedule(schedule_df_raw)
-        write_to_sheet(spreadsheet, "Schedule", schedule_df_clean)
+        url = f"https://www.pro-football-reference.com/years/{YEAR}/games.htm"
+        schedule_df = pd.read_html(url)[0]
+        write_to_sheet(spreadsheet, "Schedule", clean_pfr_table(schedule_df))
     except Exception as e: print(f"❌ Could not process Schedule: {e}")
-    
-    # You can add your other working scraper functions back here (for Defense, Players, Injuries)
-    
-    print("\n✅ Scraper script finished.")
+
+    print("\n✅ Project script finished.")

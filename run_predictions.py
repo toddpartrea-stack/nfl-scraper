@@ -24,6 +24,7 @@ def get_gspread_client():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            print("ERROR: token.pickle is missing or invalid.")
             return None
     return gspread.authorize(creds)
 
@@ -84,7 +85,7 @@ def main():
         print(f"❌ Error configuring Gemini API: {e}")
         return
 
-    # Check for required tabs
+    # Check for required tabs, NOW INCLUDING FPI
     required_tabs = ['Schedule', 'D_Overall', 'O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving', 'Injuries', 'team_match', 'FPI']
     if not all(tab in dataframes for tab in required_tabs):
         print(f"\n❌ Could not find all necessary data tabs. Found: {list(dataframes.keys())}")
@@ -132,8 +133,8 @@ def main():
 
         # Prepare all data for the prompt, now including FPI
         fpi_data = dataframes['FPI']
-        home_fpi = fpi_data[fpi_data['Team'] == home_team_full]
-        away_fpi = fpi_data[fpi_data['Team'] == away_team_full]
+        home_fpi = fpi_data[fpi_data['Team'].str.contains(home_team_full, case=False, na=False)]
+        away_fpi = fpi_data[fpi_data['Team'].str.contains(away_team_full, case=False, na=False)]
         team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
         player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
         player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]

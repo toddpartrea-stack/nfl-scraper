@@ -46,31 +46,14 @@ def write_to_sheet(spreadsheet, sheet_name, dataframe):
     worksheet.update(data_to_upload, value_input_option='USER_ENTERED')
     print(f"  -> Successfully wrote {len(dataframe)} rows.")
 
-# --- Helper Function to Clean Schedule ---
-def clean_schedule(df):
-    games = []
-    # Iterate through the raw data two rows at a time
-    for i in range(0, len(df), 2):
-        row1 = df.iloc[i]
-        row2 = df.iloc[i+1]
-        
-        # Check for valid game rows
-        if pd.isna(row1['Winner/tie']) or pd.isna(row2['Winner/tie']):
-            continue
-
-        # Determine home and away teams
-        if row1['Unnamed: 5'] == '@':
-            home_team = row2['Winner/tie']
-            away_team = row1['Winner/tie']
-        else:
-            home_team = row1['Winner/tie']
-            away_team = row2['Winner/tie']
-        
-        games.append({
-            'Week': row1['Week'], 'Day': row1['Day'], 'Date': row1['Date'],
-            'Time': row1['Time'], 'Away_Team': away_team, 'Home_Team': home_team
-        })
-    return pd.DataFrame(games)
+# --- Advanced Data Cleaning Helper ---
+def clean_pfr_table(df):
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = ['_'.join(col).strip() for col in df.columns.values]
+    if 'Rk' in df.columns:
+        df = df[df['Rk'] != 'Rk'].copy()
+    df = df.dropna(how='all').reset_index(drop=True)
+    return df
 
 # --- Main Script ---
 if __name__ == "__main__":
@@ -86,16 +69,45 @@ if __name__ == "__main__":
         fpi_df['Team'] = fpi_df['Team'].str.replace(r'^\d+', '', regex=True).str.strip()
         write_to_sheet(spreadsheet, "FPI", fpi_df)
     except Exception as e: print(f"❌ Could not process FPI Stats: {e}")
-    
-    # --- Scrape All Other PFR Data ---
-    # ... (Add other scraping blocks here for defense, offense, players, injuries)
-    
+
     # --- Scrape Schedule ---
     print("\n--- Scraping SCHEDULE ---")
     try:
-        schedule_df_raw = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/games.htm")[0]
-        schedule_df_clean = clean_schedule(schedule_df_raw)
-        write_to_sheet(spreadsheet, "Schedule", schedule_df_clean)
+        schedule_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/games.htm")[0]
+        schedule_df['Home_Team'] = schedule_df.apply(lambda row: row['Loser/tie'] if row['Unnamed: 5'] == '@' else row['Winner/tie'], axis=1)
+        schedule_df['Away_Team'] = schedule_df.apply(lambda row: row['Winner/tie'] if row['Unnamed: 5'] == '@' else row['Loser/tie'], axis=1)
+        write_to_sheet(spreadsheet, "Schedule", schedule_df)
     except Exception as e: print(f"❌ Could not process Schedule: {e}")
+    
+    # --- Scrape PFR Defense ---
+    print("\n--- Scraping DEFENSE ---")
+    try:
+        url = f"https://www.pro-football-reference.com/years/{YEAR}/opp.htm"
+        all_tables = pd.read_html(url)
+        if len(all_tables) > 0: write_to_sheet(spreadsheet, "D_Overall", clean_pfr_table(all_tables[0]))
+    except Exception as e: print(f"❌ Could not process Defensive Stats: {e}")
+    
+    # --- Scrape PFR Player Offense ---
+    print("\n--- Scraping PLAYER OFFENSE ---")
+    try:
+        passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]
+        rushing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/rushing.htm")[0]
+        receiving_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/receiving.htm")[0]
+        write_to_sheet(spreadsheet, "O_Player_Passing", clean_pfr_table(passing_df))
+        write_to_sheet(spreadsheet, "O_Player_Rushing", clean_pfr_table(rushing_df))
+        write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
+    except Exception as e: print(f"❌ Could not process Player Offensive Stats: {e}")
+
+    # --- Scrape PFR Injuries ---
+    print("\n--- Scraping INJURIES ---")
+    try:
+        season_start_date = datetime(YEAR, 9, 4)
+        today = datetime.now()
+        days_since_start = (today - season_start_date).days
+        current_week = (days_since_start // 7) + 1
+        injury_table_title = f"Week {current_week} Injuries"
+        injury_df = pd.read_html("https://www.pro-football-reference.com/injuries/injuries.htm", match=injury_table_title)[0]
+        write_to_sheet(spreadsheet, "Injuries", clean_pfr_table(injury_df))
+    except Exception as e: print(f"❌ Could not process Injury Reports: {e}")
 
     print("\n✅ Scraper script finished.")

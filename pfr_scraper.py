@@ -14,7 +14,7 @@ SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
 YEAR = 2025
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- Google Sheets Authentication (Unchanged) ---
+# --- Google Sheets Authentication (Your working version) ---
 def get_gspread_client():
     creds = None
     if os.path.exists('token.pickle'):
@@ -30,7 +30,7 @@ def get_gspread_client():
             pickle.dump(creds, token)
     return gspread.authorize(creds)
 
-# --- Helper Function to Write to a Sheet Tab (Unchanged) ---
+# --- Helper Function to Write to a Sheet Tab (Your working version) ---
 def write_to_sheet(spreadsheet, sheet_name, dataframe):
     print(f"  -> Writing data to '{sheet_name}' tab...")
     if dataframe.empty:
@@ -48,7 +48,7 @@ def write_to_sheet(spreadsheet, sheet_name, dataframe):
     worksheet.update(data_to_upload, value_input_option='USER_ENTERED')
     print(f"  -> Successfully wrote {len(dataframe)} rows.")
     
-# --- Advanced Data Cleaning Helper (Unchanged) ---
+# --- Advanced Data Cleaning Helper (Your working version) ---
 def clean_pfr_table(df):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = ['_'.join(col).strip() for col in df.columns.values]
@@ -80,7 +80,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Could not process TeamRankings Stats: {e}")
 
-    # --- DYNAMIC INJURY WEEK CALCULATION ---
+    # --- DYNAMIC INJURY WEEK CALCULATION (Your working version) ---
     season_start_date = datetime(YEAR, 9, 4)
     today = datetime.now()
     days_since_start = (today - season_start_date).days
@@ -88,7 +88,7 @@ if __name__ == "__main__":
     injury_table_title = f"Week {current_week} Injuries"
     print(f"\nCalculated current NFL week: {current_week}. Looking for table: '{injury_table_title}'")
     
-    # --- DEFENSE ---
+    # --- DEFENSE (Your working version) ---
     print("\n--- Scraping DEFENSE ---")
     try:
         url = f"https://www.pro-football-reference.com/years/{YEAR}/opp.htm"
@@ -98,7 +98,7 @@ if __name__ == "__main__":
         if len(all_tables) > 3: write_to_sheet(spreadsheet, "D_Rushing", clean_pfr_table(all_tables[3]))
     except Exception as e: print(f"❌ Could not process Defensive Stats: {e}")
 
-    # --- OFFENSE (TEAM) ---
+    # --- OFFENSE (TEAM) (Your working version) ---
     print("\n--- Scraping TEAM OFFENSE ---")
     try:
         url = f"https://www.pro-football-reference.com/years/{YEAR}/"
@@ -109,7 +109,7 @@ if __name__ == "__main__":
             print("  -> Team Offense table not found (likely not posted for the new season yet).")
     except Exception as e: print(f"❌ Could not process Team Offensive Stats: {e}")
     
-    # --- OFFENSE (PLAYER) ---
+    # --- OFFENSE (PLAYER) (Your working version) ---
     print("\n--- Scraping PLAYER OFFENSE ---")
     try:
         passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]
@@ -120,7 +120,7 @@ if __name__ == "__main__":
         write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
     except Exception as e: print(f"❌ Could not process Player Offensive Stats: {e}")
 
-    # --- INJURIES ---
+    # --- INJURIES (Your working version) ---
     print("\n--- Scraping INJURIES ---")
     try:
         url = "https://www.pro-football-reference.com/players/injuries.htm"
@@ -128,7 +128,7 @@ if __name__ == "__main__":
         write_to_sheet(spreadsheet, "Injuries", clean_pfr_table(injury_df))
     except Exception as e: print(f"❌ Could not process Injury Reports: {e}")
 
-    # --- SCHEDULE ---
+    # --- SCHEDULE (Your working version) ---
     print("\n--- Scraping SCHEDULE ---")
     try:
         url = f"https://www.pro-football-reference.com/years/{YEAR}/games.htm"

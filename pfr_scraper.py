@@ -86,7 +86,7 @@ if __name__ == "__main__":
     days_since_start = (today - season_start_date).days
     current_week = (days_since_start // 7) + 1
     injury_table_title = f"Week {current_week} Injuries"
-    print(f"Calculated current NFL week: {current_week}. Looking for table: '{injury_table_title}'")
+    print(f"\nCalculated current NFL week: {current_week}. Looking for table: '{injury_table_title}'")
     
     # --- DEFENSE ---
     print("\n--- Scraping DEFENSE ---")
@@ -120,7 +120,7 @@ if __name__ == "__main__":
         write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
     except Exception as e: print(f"❌ Could not process Player Offensive Stats: {e}")
 
-    # --- INJURIES (CORRECTED URL) ---
+    # --- INJURIES ---
     print("\n--- Scraping INJURIES ---")
     try:
         url = "https://www.pro-football-reference.com/players/injuries.htm"

@@ -14,7 +14,7 @@ SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- Google Sheets Authentication ---
+# --- Google Sheets Authentication (Your working version) ---
 def get_gspread_client():
     creds = None
     if os.path.exists('token.pickle'):
@@ -28,7 +28,7 @@ def get_gspread_client():
             return None
     return gspread.authorize(creds)
 
-# --- Function to write predictions to the sheet ---
+# --- Function to write predictions to the sheet (Your working version) ---
 def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, prediction_text):
     try:
         sheet_name = "Predictions"
@@ -85,10 +85,10 @@ def main():
         print(f"❌ Error configuring Gemini API: {e}")
         return
 
-    # Check for required tabs
-    required_tabs = ['Schedule', 'D_Overall', 'O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving', 'Injuries', 'team_match', 'FPI']
+    # Check for required tabs, NOW INCLUDING Power_Rankings
+    required_tabs = ['Schedule', 'D_Overall', 'O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving', 'Injuries', 'team_match', 'Power_Rankings']
     if not all(tab in dataframes for tab in required_tabs):
-        print(f"\n❌ Could not find all necessary data tabs to make a prediction. Found: {list(dataframes.keys())}")
+        print(f"\n❌ Could not find all necessary data tabs. Found: {list(dataframes.keys())}")
         return
 
     # Clear old predictions
@@ -100,7 +100,7 @@ def main():
     except gspread.WorksheetNotFound:
         pass
 
-    # Data Standardization
+    # Data Standardization (Your working logic)
     team_map_df = dataframes['team_match']
     abbr_to_full = pd.Series(team_map_df['Full Name'].values, index=team_map_df['Abbreviation']).to_dict()
     full_to_abbr = pd.Series(team_map_df['Abbreviation'].values, index=team_map_df['Full Name']).to_dict()
@@ -111,54 +111,45 @@ def main():
             df['Team_Full'] = df[team_col_found].map(abbr_to_full).fillna(df[team_col_found])
             df['Team_Abbr'] = df[team_col_found].map(full_to_abbr).fillna(df[team_col_found])
 
-    # Find the current week's games
+    # Find the current week's games (Your working logic)
     schedule_df = dataframes['Schedule']
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
     calculation_start_date = datetime(2025, 9, 2)
     today = datetime.now()
     days_since_start = (today - calculation_start_date).days
     current_week = (days_since_start // 7) + 1
-    this_weeks_games_raw = schedule_df[schedule_df['Week'] == current_week]
+    this_weeks_games = schedule_df[schedule_df['Week'] == current_week].dropna(subset=['Winner/tie', 'Loser/tie'])
     
-    print(f"\nFound {len(this_weeks_games_raw) // 2} games for Week {current_week}. Starting analysis...")
+    print(f"\nFound {len(this_weeks_games)} games for Week {current_week}. Starting analysis...")
     
-    # Process games in pairs
-    for i in range(0, len(this_weeks_games_raw), 2):
-        row1 = this_weeks_games_raw.iloc[i]
-        row2 = this_weeks_games_raw.iloc[i+1]
-        if pd.isna(row1['Winner/tie']) or pd.isna(row2['Winner/tie']):
-            continue
-
-        if row1['Unnamed: 5'] == '@':
-            home_team_full = row2['Winner/tie']
-            away_team_full = row1['Winner/tie']
-        else:
-            home_team_full = row1['Winner/tie']
-            away_team_full = row2['Winner/tie']
-            
+    for index, game in this_weeks_games.iterrows():
+        # Matchup logic from your working script
+        home_team_full = game['Loser/tie'] if game['Unnamed: 5'] == '@' else game['Winner/tie']
+        away_team_full = game['Winner/tie'] if game['Unnamed: 5'] == '@' else game['Loser/tie']
         home_team_abbr = full_to_abbr.get(home_team_full)
         away_team_abbr = full_to_abbr.get(away_team_full)
 
         print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
 
-        # Prepare all data for the prompt
-        fpi_data = dataframes['FPI']
-        home_fpi = fpi_data[fpi_data['Team'].str.contains(home_team_full, case=False, na=False)]
-        away_fpi = fpi_data[fpi_data['Team'].str.contains(away_team_full, case=False, na=False)]
+        # Prepare all data for the prompt, NOW INCLUDING Power Rankings
+        power_rankings_data = dataframes['Power_Rankings']
+        home_power_rankings = power_rankings_data[power_rankings_data['Team'].str.contains(home_team_full, case=False, na=False)]
+        away_power_rankings = power_rankings_data[power_rankings_data['Team'].str.contains(away_team_full, case=False, na=False)]
+        
         team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
         player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
         player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
         player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
         injury_data = dataframes['Injuries'][dataframes['Injuries']['Team_Full'].isin([home_team_full, away_team_full])]
         
-        # --- UPDATED PROMPT ---
+        # Updated prompt with Power Rankings
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
-        Use all of the data available to make the most informed decision.
+        Use all of the data provided to make the most informed decision.
 
         ---
         ## {home_team_full} (Home) Data
-        - ESPN FPI: {home_fpi.to_string()}
+        - Power Ranking: {home_power_rankings.to_string()}
         - Defense: {team_defense_data[team_defense_data['Team_Full'] == home_team_full].to_string()}
         - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == home_team_abbr].to_string()}
         - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == home_team_abbr].to_string()}
@@ -166,7 +157,7 @@ def main():
         - Injuries: {injury_data[injury_data['Team_Full'] == home_team_full].to_string()}
 
         ## {away_team_full} (Away) Data
-        - ESPN FPI: {away_fpi.to_string()}
+        - Power Ranking: {away_power_rankings.to_string()}
         - Defense: {team_defense_data[team_defense_data['Team_Full'] == away_team_full].to_string()}
         - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == away_team_abbr].to_string()}
         - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == away_team_abbr].to_string()}

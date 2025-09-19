@@ -167,9 +167,10 @@ def main():
 
         Based on the structured data above, provide the following in a clear format:
         1. **Game Prediction:** Predicted Winner and Predicted Final Score.
-        2. **Key Player Stat Predictions:** Predict the Passing Yards and Rushing Yards for each QB. Predict Rushing Yards for the lead RB on each team. Predict Receiving Yards for the lead WR on each team.
-        3. **Touchdown Scorers:** List 2-3 players (by name and position, e.g., 'RB Name (RB)') who are most likely to score a rushing or receiving touchdown in this game. Do not include QBs for passing touchdowns.
-        4. **Justification:** A brief justification for your overall prediction including the most important deciding factors for your prediction.
+        2. **2. Confidence Percentage: [Provide a confidence percentage from 1% to 100% for the predicted winner.
+        3. **Key Player Stat Predictions:** Predict the Passing Yards and Rushing Yards for each QB. Predict Rushing Yards for the lead RB on each team. Predict Receiving Yards for the lead WR on each team.
+        4. **Touchdown Scorers:** List 2-3 players (by name and position, e.g., 'RB Name (RB)') who are most likely to score a rushing or receiving touchdown in this game. Do not include QBs for passing touchdowns.
+        5. **Justification:** A brief justification for your overall prediction including the most important deciding factors for your prediction.
         """
         
         try:

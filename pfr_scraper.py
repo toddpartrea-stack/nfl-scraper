@@ -155,6 +155,34 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Could not process Injury Reports: {e}")
 
+     # --- NEW: Scrape FootballGuys.com Depth Charts ---
+    print("\n--- Scraping FootballGuys.com Depth Charts ---")
+    try:
+        url = "https://www.footballguys.com/depth-charts"
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh...)'}
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        team_containers = soup.find_all('div', class_='depth-chart')
+        all_players = []
+        for container in team_containers:
+            team_name_tag = container.find('span', class_='team-header')
+            if team_name_tag:
+                team_name = team_name_tag.text.strip()
+                position_items = container.find_all('li')
+                for item in position_items:
+                    pos_label_tag = item.find('span', class_='pos-label')
+                    if pos_label_tag:
+                        position = pos_label_tag.text.replace(':', '').strip()
+                        player_tags = item.find_all(['a', 'span'], class_='player')
+                        for i, player_tag in enumerate(player_tags):
+                            player_name = player_tag.text.strip()
+                            all_players.append({'Team': team_name, 'Position': position, 'Depth': i + 1, 'Player': player_name})
+        if all_players:
+            depth_chart_df = pd.DataFrame(all_players)
+            write_to_sheet(spreadsheet, "Depth_Charts", depth_chart_df)
+    except Exception as e:
+        print(f"❌ Could not process Depth Charts: {e}")
+
     # --- SCHEDULE (Your working version) ---
     print("\n--- Scraping SCHEDULE ---")
     try:

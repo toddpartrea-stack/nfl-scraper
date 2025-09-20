@@ -49,15 +49,6 @@ def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, predictio
     except Exception as e:
         print(f"  -> ❌ Error writing prediction to sheet: {e}")
 
-# --- NEW: Function to standardize player names ---
-def standardize_player_name(name):
-    if isinstance(name, str):
-        if ',' in name:
-            parts = name.split(',')
-            return f"{parts[1].strip()} {parts[0].strip()}"
-        return name.split('(')[0].strip()
-    return name
-
 # --- Main execution block ---
 def main():
     print("Authenticating with Google Sheets...")
@@ -84,18 +75,6 @@ def main():
     except Exception as e:
         print(f"❌ Error loading sheet: {e}")
         return
-
-    # --- NEW: Create a "Will Not Play" column in the Injuries DataFrame ---
-    print("\nProcessing injury data...")
-    if 'Injuries' in dataframes:
-        injury_df = dataframes['Injuries']
-        # Define keywords that indicate a player will not play
-        out_keywords = ['IR', 'Out', 'PUP', 'NFI']
-        # Create the new column
-        injury_df['Will_Not_Play'] = injury_df['Injury Status'].apply(
-            lambda x: 'Yes' if any(keyword in str(x) for keyword in out_keywords) else 'No'
-        )
-        print("  -> Created 'Will_Not_Play' column for injury analysis.")
         
     # Configure Gemini API
     try:
@@ -166,11 +145,7 @@ def main():
         # Updated prompt with Power Rankings
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
-        Use all of the data provided to make the most informed decision. IMPORTANT: Pay close attention to the 'Injuries' data, 
-        specifically the 'Will_Not_Play' column. If a starting player (depth chart 'Depth' = 1) has a 'Yes' 
-        in the 'Will_Not_Play' column, you MUST assume they will not play. Consult the provided Depth Chart to 
-        identify their direct backup (depth chart 'Depth' = 2) and you MUST factor the skill level of the 
-        backup player into your prediction.  
+        Use all of the data provided to make the most informed decision.
 
         ---
         ## {home_team_full} (Home) Data
@@ -192,10 +167,10 @@ def main():
 
         Based on the structured data above, provide the following in a clear format:
         1. **Game Prediction:** Predicted Winner and Predicted Final Score.
-        2. **Outcome Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
+        2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
         3. **Key Player Stat Predictions:** Predict the Passing Yards and Rushing Yards for each QB. Predict Rushing Yards for the lead RB on each team. Predict Receiving Yards for the lead WR on each team. Include your confidence percentage of each player achieving the predictions.
         4. **Touchdown Scorers:** List 2-3 players (by name and position, e.g., 'RB Name (RB)') who are most likely to score a rushing or receiving touchdown in this game. Do not include QBs for passing touchdowns. Provide a confidence percentage for each touchdown scorer.
-        5. **Justification:** A brief justification for your overall prediction including the most important deciding factors for your prediction. If there are any key players out due to injury be sure to include that
+        5. **Justification:** A brief justification for your overall prediction including the most important deciding factors for your prediction.
         """
         
         try:

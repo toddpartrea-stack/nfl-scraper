@@ -206,10 +206,9 @@ def main():
         # Updated prompt - no changes needed here as the data is already clean
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
-        Use all of the data provided to make the most informed decision. 
+        Before you make any decisions you MUST:
         IMPORTANT: Pay close attention to the 'Injuries' data 
-        1. if a starting player (depth chart 'Depth' = 1) has an Injury Status with any of the key words IR, 
-        Injured Reserve, Out, PUP, Physically Unable to Perform, or NFI you MUST assume they will not play. 
+        1. if a player has an Injury Status with any of the key words IR, Injured Reserve, Out, PUP, Physically Unable to Perform, or NFI you MUST assume they will not play. Go to the Depth_Charts and confirm if that injured player has (depth chart 'Depth' = 1)
         2. Consult the provided Depth Chart to identify their direct backup (depth chart 'Depth' = 2) and you MUST factor the skill level of the 
         backup player into your prediction.  
 

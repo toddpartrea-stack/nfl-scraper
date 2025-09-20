@@ -59,16 +59,24 @@ def get_out_players_set(depth_chart_df):
     print(f"Found {len(out_players_set)} players who are OUT from the depth chart.")
     return out_players_set
 
-# --- FRANCO: NEW "GAME-DAY ROSTER" LOGIC ---
-def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out_players_set, pos_config):
+# --- FRANCO: UPDATED "GAME-DAY ROSTER" LOGIC ---
+def get_game_day_roster(team_full_name, depth_chart_df, stats_df, out_players_set, pos_config):
     """
     Builds a clean roster of healthy players for a specific team based on the depth chart.
     """
+    # FRANCO: Intelligently find the player column in the stats sheet
+    possible_player_cols = ['Player', 'Unnamed: 1_level_0_Player']
+    player_col_found = next((col for col in possible_player_cols if col in stats_df.columns), None)
+
+    if not player_col_found:
+        print(f"ERROR: Could not find a known player column in a stats sheet. Columns are: {stats_df.columns.tolist()}")
+        return pd.DataFrame() # Return empty DataFrame to prevent a crash
+
     team_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == team_full_name].copy()
     
     # Normalize player names in both dataframes for reliable matching
     team_depth_chart['Player_Normalized'] = team_depth_chart['Player'].apply(normalize_player_name)
-    stats_df['Player_Normalized'] = stats_df['Player'].apply(normalize_player_name)
+    stats_df['Player_Normalized'] = stats_df[player_col_found].apply(normalize_player_name)
     
     active_roster_players = []
     
@@ -88,8 +96,12 @@ def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out
     # Filter the original stats DataFrame to include only the active roster players
     final_roster_df = stats_df[stats_df['Player_Normalized'].isin(active_roster_players)]
     
-    return final_roster_df.drop(columns=['Player_Normalized'])
+    # Create a clean version of the final DF without the normalized column
+    clean_df = final_roster_df.copy()
+    if 'Player_Normalized' in clean_df.columns:
+        clean_df = clean_df.drop(columns=['Player_Normalized'])
 
+    return clean_df
 
 # --- Main execution block ---
 def main():
@@ -166,28 +178,25 @@ def main():
     for index, game in this_weeks_games.iterrows():
         home_team_full = game['Loser/tie'] if game['Unnamed: 5'] == '@' else game['Winner/tie']
         away_team_full = game['Winner/tie'] if game['Unnamed: 5'] == '@' else game['Loser/tie']
-        home_team_abbr = full_name_to_abbr.get(home_team_full)
-        away_team_abbr = full_name_to_abbr.get(away_team_full)
 
         print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
         
-        # --- FRANCO: Build the clean Game-Day Rosters ---
+        # Build the clean Game-Day Rosters
         pos_config_passing = {'QB': 1}
         pos_config_rushing = {'RB': 2, 'QB': 1}
         pos_config_receiving = {'WR': 3, 'TE': 1}
 
-        home_passing_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, dataframes['O_Player_Passing'], out_players_set, pos_config_passing)
-        away_passing_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, dataframes['O_Player_Passing'], out_players_set, pos_config_passing)
+        home_passing_roster = get_game_day_roster(home_team_full, depth_chart_df, dataframes['O_Player_Passing'], out_players_set, pos_config_passing)
+        away_passing_roster = get_game_day_roster(away_team_full, depth_chart_df, dataframes['O_Player_Passing'], out_players_set, pos_config_passing)
         
-        home_rushing_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, dataframes['O_Player_Rushing'], out_players_set, pos_config_rushing)
-        away_rushing_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, dataframes['O_Player_Rushing'], out_players_set, pos_config_rushing)
+        home_rushing_roster = get_game_day_roster(home_team_full, depth_chart_df, dataframes['O_Player_Rushing'], out_players_set, pos_config_rushing)
+        away_rushing_roster = get_game_day_roster(away_team_full, depth_chart_df, dataframes['O_Player_Rushing'], out_players_set, pos_config_rushing)
 
-        home_receiving_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, dataframes['O_Player_Receiving'], out_players_set, pos_config_receiving)
-        away_receiving_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, dataframes['O_Player_Receiving'], out_players_set, pos_config_receiving)
+        home_receiving_roster = get_game_day_roster(home_team_full, depth_chart_df, dataframes['O_Player_Receiving'], out_players_set, pos_config_receiving)
+        away_receiving_roster = get_game_day_roster(away_team_full, depth_chart_df, dataframes['O_Player_Receiving'], out_players_set, pos_config_receiving)
 
         team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
         
-        # --- FRANCO: FINAL PROMPT WITH UPDATED INSTRUCTIONS ---
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
         Analyze the provided data, which has been filtered to show only the key players expected to be active for this game.

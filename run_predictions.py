@@ -145,7 +145,9 @@ def main():
         # Updated prompt with Power Rankings
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
-        Use all of the data provided to make the most informed decision.
+        Use all of the data provided to make the most informed decision. IMPORTANT: Pay close attention to the injury report. 
+        If a starting player is on the injury list with any injury status that says IR, injured reserve or out you should assume they will not play.
+        You should then use the depth chart to find the next healthy player and assume that person will play
 
         ---
         ## {home_team_full} (Home) Data

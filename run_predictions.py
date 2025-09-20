@@ -14,7 +14,7 @@ SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- Google Sheets Authentication ---
+# --- Google Sheets Authentication (Your working version) ---
 def get_gspread_client():
     creds = None
     if os.path.exists('token.pickle'):
@@ -24,10 +24,11 @@ def get_gspread_client():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            print("ERROR: token.pickle is missing or invalid.")
             return None
     return gspread.authorize(creds)
 
-# --- Function to write predictions to the sheet ---
+# --- Function to write predictions to the sheet (Your working version) ---
 def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, prediction_text):
     try:
         sheet_name = "Predictions"
@@ -35,14 +36,13 @@ def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, predictio
             worksheet = spreadsheet.worksheet(sheet_name)
         except gspread.WorksheetNotFound:
             worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1, cols=6)
-            worksheet.update('A1:F1', [['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification']])
+            worksheet.update('A1:F1', [['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
 
+        justification = prediction_text.strip()
         winner_match = re.search(r"Predicted Winner:\s*(.*)", prediction_text)
         score_match = re.search(r"Predicted Final Score:\s*(.*)", prediction_text)
-        justification_match = re.search(r"Justification:\s*(.*)", prediction_text, re.IGNORECASE)
-        winner = winner_match.group(1).strip() if winner_match else "N/A"
-        score = score_match.group(1).strip() if score_match else "N/A"
-        justification = justification_match.group(1).strip() if justification_match else "N/A"
+        winner = winner_match.group(1).strip() if winner_match else "See Justification"
+        score = score_match.group(1).strip() if score_match else "See Justification"
 
         worksheet.append_row([week, away_team, home_team, winner, score, justification])
         print(f"  -> ✅ Prediction for {away_team} @ {home_team} written to sheet.")
@@ -50,14 +50,20 @@ def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, predictio
         print(f"  -> ❌ Error writing prediction to sheet: {e}")
 
 # --- Main execution block ---
-def run_predictions():
-    print("Authenticating...")
+def main():
+    print("Authenticating with Google Sheets...")
     gc = get_gspread_client()
     if not gc: return
-    spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
 
+    try:
+        spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
+    except Exception as e:
+        print(f"❌ An error occurred opening the sheet: {e}")
+        return
+
+    # Load All Data
     dataframes = {}
-    print("\nLoading data...")
+    print("\nLoading and cleaning data from Google Sheet tabs...")
     try:
         for worksheet in spreadsheet.worksheets():
             title = worksheet.title
@@ -68,71 +74,116 @@ def run_predictions():
                 print(f"  -> Loaded tab: {title}")
     except Exception as e:
         print(f"❌ Error loading sheet: {e}")
+        return
+        
+    # Configure Gemini API
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        print("\n✅ Gemini API configured.")
+    except Exception as e:
+        print(f"❌ Error configuring Gemini API: {e}")
+        return
 
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    print("\n✅ Gemini API configured.")
-
-    required_tabs = ['Schedule', 'FPI']
-    if all(tab in dataframes for tab in required_tabs):
-
-        try:
-            predictions_sheet = spreadsheet.worksheet("Predictions")
-            predictions_sheet.clear()
-            predictions_sheet.update('A1:F1', [['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification']])
-        except gspread.WorksheetNotFound:
-            pass
-
-        schedule_df = dataframes['Schedule']
-        schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
-
-        calculation_start_date = datetime(2025, 9, 2)
-        today = datetime.now()
-        days_since_start = (today - calculation_start_date).days
-        current_week = (days_since_start // 7) + 1
-
-        this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
-
-        print(f"\nFound {len(this_weeks_games)} games for Week {current_week}. Starting analysis...")
-
-        for index, game in this_weeks_games.iterrows():
-            home_team_full = game['Home_Team']
-            away_team_full = game['Away_Team']
-
-            print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
-
-            fpi_data = dataframes['FPI']
-            home_fpi = fpi_data[fpi_data['Team'].str.contains(home_team_full, case=False, na=False)]
-            away_fpi = fpi_data[fpi_data['Team'].str.contains(away_team_full, case=False, na=False)]
-
-            matchup_prompt = f"""
-            Act as an expert NFL analyst. Predict the outcome of {away_team_full} at {home_team_full}.
-            Use the provided ESPN FPI data as the primary basis for your prediction.
-
-            ---
-            HOME TEAM ({home_team_full}) FPI DATA:
-            {home_fpi.to_string()}
-            ---
-            AWAY TEAM ({away_team_full}) FPI DATA:
-            {away_fpi.to_string()}
-            ---
-
-            Provide the following:
-            1. **Predicted Winner:** [Team Name]
-            2. **Predicted Final Score:** [Away Score] - [Home Score]
-            3. **Justification:** [Brief justification based on FPI.]
-            """
-
-            try:
-                response = model.generate_content(matchup_prompt)
-                print(response.text)
-                write_prediction_to_sheet(spreadsheet, current_week, away_team_full, home_team_full, response.text)
-            except Exception as e:
-                print(f"Could not generate prediction: {e}")
-
-            time.sleep(3)
-    else:
+    # Check for required tabs, now including Power_Rankings
+    required_tabs = ['Schedule', 'D_Overall', 'O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving', 'Injuries', 'team_match', 'Power_Rankings']
+    if not all(tab in dataframes for tab in required_tabs):
         print(f"\n❌ Could not find all necessary data tabs. Found: {list(dataframes.keys())}")
+        return
+
+    # Clear old predictions
+    try:
+        predictions_sheet = spreadsheet.worksheet("Predictions")
+        predictions_sheet.clear()
+        predictions_sheet.update('A1:F1', [['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
+        print("\nCleared old data from 'Predictions' tab.")
+    except gspread.WorksheetNotFound:
+        pass
+
+    # Data Standardization (Your working logic)
+    team_map_df = dataframes['team_match']
+    abbr_to_full = pd.Series(team_map_df['Full Name'].values, index=team_map_df['Abbreviation']).to_dict()
+    full_to_abbr = pd.Series(team_map_df['Abbreviation'].values, index=team_map_df['Full Name']).to_dict()
+    possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm', 'Unnamed: 3_level_0_Team']
+    for name, df in dataframes.items():
+        team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
+        if team_col_found:
+            df['Team_Full'] = df[team_col_found].map(abbr_to_full).fillna(df[team_col_found])
+            df['Team_Abbr'] = df[team_col_found].map(full_to_abbr).fillna(df[team_col_found])
+
+    # Find the current week's games (Your working logic)
+    schedule_df = dataframes['Schedule']
+    schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
+    calculation_start_date = datetime(2025, 9, 2)
+    today = datetime.now()
+    days_since_start = (today - calculation_start_date).days
+    current_week = (days_since_start // 7) + 1
+    this_weeks_games = schedule_df[schedule_df['Week'] == current_week].dropna(subset=['Winner/tie', 'Loser/tie'])
+    
+    print(f"\nFound {len(this_weeks_games)} games for Week {current_week}. Starting analysis...")
+    
+    for index, game in this_weeks_games.iterrows():
+        # Matchup logic from your working script
+        home_team_full = game['Loser/tie'] if game['Unnamed: 5'] == '@' else game['Winner/tie']
+        away_team_full = game['Winner/tie'] if game['Unnamed: 5'] == '@' else game['Loser/tie']
+        home_team_abbr = full_to_abbr.get(home_team_full)
+        away_team_abbr = full_to_abbr.get(away_team_full)
+
+        print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
+
+        # Prepare all data for the prompt, now including Power Rankings
+        power_rankings_data = dataframes['Power_Rankings']
+        home_power_rankings = power_rankings_data[power_rankings_data['Team'].str.contains(home_team_full, case=False, na=False)]
+        away_power_rankings = power_rankings_data[power_rankings_data['Team'].str.contains(away_team_full, case=False, na=False)]
+        
+        team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
+        player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
+        player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
+        player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
+        injury_data = dataframes['Injuries'][dataframes['Injuries']['Team_Full'].isin([home_team_full, away_team_full])]
+        
+        # Updated prompt with Power Rankings
+        matchup_prompt = f"""
+        Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
+        Use all of the data provided to make the most informed decision.
+
+        ---
+        ## {home_team_full} (Home) Data
+        - Power Ranking: {home_power_rankings.to_string()}
+        - Defense: {team_defense_data[team_defense_data['Team_Full'] == home_team_full].to_string()}
+        - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == home_team_abbr].to_string()}
+        - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == home_team_abbr].to_string()}
+        - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == home_team_abbr].to_string()}
+        - Injuries: {injury_data[injury_data['Team_Full'] == home_team_full].to_string()}
+
+        ## {away_team_full} (Away) Data
+        - Power Ranking: {away_power_rankings.to_string()}
+        - Defense: {team_defense_data[team_defense_data['Team_Full'] == away_team_full].to_string()}
+        - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == away_team_abbr].to_string()}
+        - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == away_team_abbr].to_string()}
+        - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == away_team_abbr].to_string()}
+        - Injuries: {injury_data[injury_data['Team_Full'] == away_team_full].to_string()}
+        ---
+
+        Based on the structured data above, provide the following in a clear format:
+        1. **Game Prediction:** Predicted Winner and Predicted Final Score.
+        2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
+        3. **Key Player Stat Predictions:** Predict the Passing Yards and Rushing Yards for each QB. Predict Rushing Yards for the lead RB on each team. Predict Receiving Yards for the lead WR on each team. Include your confidence percentage of each player achieving the predictions.
+        4. **Touchdown Scorers:** List 2-3 players (by name and position, e.g., 'RB Name (RB)') who are most likely to score a rushing or receiving touchdown in this game. Do not include QBs for passing touchdowns. Provide a confidence percentage for each touchdown scorer.
+        5. **Justification:** A brief justification for your overall prediction including the most important deciding factors for your prediction.
+        """
+        
+        try:
+            response = model.generate_content(matchup_prompt)
+            print("--- PREDICTION (Raw Text) ---")
+            print(response.text)
+            
+            write_prediction_to_sheet(spreadsheet, current_week, away_team_full, home_team_full, response.text)
+
+        except Exception as e:
+            print(f"Could not generate prediction for this matchup: {e}")
+        
+        time.sleep(10)
 
 if __name__ == "__main__":
-    run_predictions()
+    main()

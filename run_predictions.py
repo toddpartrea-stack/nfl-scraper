@@ -14,7 +14,7 @@ SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- Google Sheets Authentication (Your working version) ---
+# --- Google Sheets Authentication ---
 def get_gspread_client():
     creds = None
     if os.path.exists('token.pickle'):
@@ -28,7 +28,7 @@ def get_gspread_client():
             return None
     return gspread.authorize(creds)
 
-# --- Function to write predictions to the sheet (Your working version) ---
+# --- Function to write predictions to the sheet ---
 def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, prediction_text):
     try:
         sheet_name = "Predictions"
@@ -48,17 +48,6 @@ def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, predictio
         print(f"  -> ✅ Prediction for {away_team} @ {home_team} written to sheet.")
     except Exception as e:
         print(f"  -> ❌ Error writing prediction to sheet: {e}")
-
-# --- NEW: Function to standardize player names ---
-def standardize_player_name(name):
-    if isinstance(name, str):
-        # Handle "Lastname, Firstname" format from some PFR tables
-        if ',' in name:
-            parts = name.split(',')
-            return f"{parts[1].strip()} {parts[0].strip()}"
-        # Handle injury status suffixes like "Player Name (Q)" from depth charts
-        return name.split('(')[0].strip()
-    return name
 
 # --- Main execution block ---
 def main():
@@ -96,8 +85,8 @@ def main():
         print(f"❌ Error configuring Gemini API: {e}")
         return
 
-    # Check for required tabs, now including Depth_Charts
-    required_tabs = ['Schedule', 'D_Overall', 'Injuries', 'team_match', 'Power_Rankings', 'Depth_Charts']
+    # Check for required tabs
+    required_tabs = ['Schedule', 'D_Overall', 'O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving', 'Injuries', 'team_match', 'Power_Rankings']
     if not all(tab in dataframes for tab in required_tabs):
         print(f"\n❌ Could not find all necessary data tabs. Found: {list(dataframes.keys())}")
         return
@@ -111,25 +100,25 @@ def main():
     except gspread.WorksheetNotFound:
         pass
 
-    # --- Data Standardization ---
-    print("\nStandardizing team and player names across all tables...")
+    # --- NEW: 3-Way Data Standardization ---
+    print("\nStandardizing team names across all tables...")
     team_map_df = dataframes['team_match']
+    # Create three lookup dictionaries from your team_match tab
     abbr_to_full = pd.Series(team_map_df['Full Name'].values, index=team_map_df['Abbreviation']).to_dict()
     full_to_abbr = pd.Series(team_map_df['Abbreviation'].values, index=team_map_df['Full Name']).to_dict()
-    
-    possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm', 'Unnamed: 3_level_0_Team']
+    injury_to_full = pd.Series(team_map_df['Full Name'].values, index=team_map_df['Injury team']).to_dict()
+
     for name, df in dataframes.items():
-        team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
-        if team_col_found:
-            df['Team_Full'] = df[team_col_found].map(abbr_to_full).fillna(df[team_col_found])
-            df['Team_Abbr'] = df[team_col_found].map(full_to_abbr).fillna(df[team_col_found])
-
-        # Standardize player names
-        player_col = next((col for col in ['Player', 'Player Name'] if col in df.columns), None)
-        if player_col:
-            df[player_col] = df[player_col].apply(standardize_player_name)
-            print(f"  -> Standardized player names for tab: {name}")
-
+        # Standardize the 'Injuries' tab using your new column
+        if name == 'Injuries' and 'Team' in df.columns:
+            df['Team_Full'] = df['Team'].map(injury_to_full)
+            df['Team_Abbr'] = df['Team_Full'].map(full_to_abbr)
+        else: # Standardize all other tabs like before
+            team_col_found = next((col for col in df.columns if 'Tm' in col or 'Team' in col or 'Winner/tie' in col or 'Loser/tie' in col), None)
+            if team_col_found:
+                df['Team_Full'] = df[team_col_found].map(abbr_to_full).fillna(df[team_col_found])
+                df['Team_Abbr'] = df[team_col_found].map(full_to_abbr).fillna(df[team_col_found])
+    
     # Find the current week's games (Your working logic)
     schedule_df = dataframes['Schedule']
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
@@ -160,40 +149,49 @@ def main():
 
         print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
 
-        # Prepare all data for the prompt, including Depth Charts
+        # Prepare all data for the prompt
         power_rankings_data = dataframes['Power_Rankings']
         home_power_rankings = power_rankings_data[power_rankings_data['Team'].str.contains(home_team_full, case=False, na=False)]
         away_power_rankings = power_rankings_data[power_rankings_data['Team'].str.contains(away_team_full, case=False, na=False)]
+        team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'] == home_team_full]
+        away_team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'] == away_team_full]
+        player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Team_Abbr'] == home_team_abbr]
+        away_player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Team_Abbr'] == away_team_abbr]
+        player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Team_Abbr'] == home_team_abbr]
+        away_player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Team_Abbr'] == away_team_abbr]
+        player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Team_Abbr'] == home_team_abbr]
+        away_player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Team_Abbr'] == away_team_abbr]
+        injury_data = dataframes['Injuries'][dataframes['Injuries']['Team_Full'] == home_team_full]
+        away_injury_data = dataframes['Injuries'][dataframes['Injuries']['Team_Full'] == away_team_full]
         
-        injury_data = dataframes['Injuries']
-        home_injury_data = injury_data[injury_data['Team_Full'] == home_team_full]
-        away_injury_data = injury_data[injury_data['Team_Full'] == away_team_full]
-        
-        depth_chart_data = dataframes['Depth_Charts']
-        home_depth_chart = depth_chart_data[depth_chart_data['Team'] == home_team_abbr]
-        away_depth_chart = depth_chart_data[depth_chart_data['Team'] == away_team_abbr]
-        
-        # --- The Final, Most Advanced Prompt ---
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
-        
-        IMPORTANT: Pay close attention to the injury report. If a starting player (depth chart 'Depth' = 1) is on the injury list with a status of 'Out', 'IR', or 'PUP', you MUST assume they will not play. Consult the provided Depth Chart to identify their direct backup (depth chart 'Depth' = 2) and you MUST factor the skill level of the backup player into your prediction.
+        Use all of the data provided to make the most informed decision.
 
         ---
         ## {home_team_full} (Home) Data
         - Power Ranking: {home_power_rankings.to_string()}
-        - Injuries: {home_injury_data.to_string()}
-        - Depth Chart: {home_depth_chart.to_string()}
+        - Defense: {team_defense_data.to_string()}
+        - Passing Offense: {player_passing_data.to_string()}
+        - Rushing Offense: {player_rushing_data.to_string()}
+        - Receiving Offense: {player_receiving_data.to_string()}
+        - Injuries: {injury_data.to_string()}
 
         ## {away_team_full} (Away) Data
         - Power Ranking: {away_power_rankings.to_string()}
+        - Defense: {away_team_defense_data.to_string()}
+        - Passing Offense: {away_player_passing_data.to_string()}
+        - Rushing Offense: {away_player_rushing_data.to_string()}
+        - Receiving Offense: {away_player_receiving_data.to_string()}
         - Injuries: {away_injury_data.to_string()}
-        - Depth Chart: {away_depth_chart.to_string()}
         ---
 
-        Based on all the structured data above, provide your final, most informed prediction.
+        Based on the structured data above, provide the following in a clear format:
         1. **Game Prediction:** Predicted Winner and Predicted Final Score.
-        2. **Justification:** A brief justification for your prediction, mentioning the impact of any key injuries and their replacements.
+        2. **Score Confidence Percentage: [Provide a confidence percentage from 1% to 100% for the predicted winner of the game not the score.
+        3. **Key Player Stat Predictions:** Predict the Passing Yards and Rushing Yards for each QB. Predict Rushing Yards for the lead RB on each team. Predict Receiving Yards for the lead WR on each team. Include your confidence percentage of each player acheiving the predictions
+        4. **Touchdown Scorers:** List 2-3 players (by name and position, e.g., 'RB Name (RB)') who are most likely to score a rushing or receiving touchdown in this game. Do not include QBs for passing touchdowns. Provide a confidence percentage from 1% to 100% for each touchdown scorer.
+        5. **Justification:** A brief justification for your overall prediction including the most important deciding factors for your prediction.
         """
         
         try:

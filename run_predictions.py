@@ -34,7 +34,6 @@ def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, predictio
     try:
         sheet_name = "Predictions"
         worksheet = spreadsheet.worksheet(sheet_name)
-        # Simplified parsing logic for the new prompt format
         justification = prediction_text.strip()
         winner_match = re.search(r"Predicted Winner:\s*(.*)", prediction_text)
         score_match = re.search(r"Predicted Final Score:\s*(.*)", prediction_text)
@@ -97,12 +96,10 @@ def main():
     team_map_df = dataframes['team_match']
     master_team_map = {}
     full_name_to_abbr = {}
-
     for _, row in team_map_df.iterrows():
         full_name = row['Full Name']
         abbr = row['Abbreviation']
         injury_team_name = row['Injury team']
-        
         if full_name: master_team_map[full_name] = full_name
         if abbr: master_team_map[abbr] = full_name
         if injury_team_name: master_team_map[injury_team_name] = full_name
@@ -110,8 +107,8 @@ def main():
     
     # Standardize All DataFrames using the Master Map
     print("\nStandardizing team names across all data sheets...")
-    possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm']
-    
+    # FRANCO: Added the new column name to this list
+    possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm', 'Unnamed: 3_level_0_Team']
     for name, df in dataframes.items():
         team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
         if team_col_found:
@@ -151,7 +148,13 @@ def main():
     # Find the current week's games
     schedule_df = dataframes['Schedule']
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
+    # For testing, we are hardcoding the week. To make it dynamic, use the code below.
     current_week = 3
+    # DYNAMIC WEEK CALCULATION (use this when you're ready)
+    # today = datetime.now()
+    # future_games = schedule_df[pd.to_datetime(schedule_df['Date'] + f", {YEAR}", errors='coerce') >= today]
+    # current_week = future_games['Week'].min() if not future_games.empty else schedule_df['Week'].max()
+
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week].dropna(subset=['Winner/tie', 'Loser/tie'])
     
     print(f"\nFound {len(this_weeks_games)} games for Week {current_week}. Starting analysis...")
@@ -160,8 +163,9 @@ def main():
     depth_chart_df['Depth'] = pd.to_numeric(depth_chart_df['Depth'], errors='coerce')
 
     for index, game in this_weeks_games.iterrows():
-        home_team_full = game['Team_Full']
-        away_team_full = [x for x in [game['Winner/tie'], game['Loser/tie']] if x != home_team_full][0]
+        # FRANCO: Fixed the logic to correctly identify home and away teams
+        home_team_full = game['Loser/tie'] if game['Unnamed: 5'] == '@' else game['Winner/tie']
+        away_team_full = game['Winner/tie'] if game['Unnamed: 5'] == '@' else game['Loser/tie']
 
         print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
 
@@ -186,22 +190,11 @@ def main():
         home_team_abbr = full_name_to_abbr.get(home_team_full)
         away_team_abbr = full_name_to_abbr.get(away_team_full)
         
-        # FRANCO: THIS IS THE DEFINITIVE FIX FOR THE KEYERROR
-        # Use the flexible column name to filter the data for the prompt
-        pass_df = dataframes['O_Player_Passing']
-        rush_df = dataframes['O_Player_Rushing']
-        rec_df = dataframes['O_Player_Receiving']
-
-        pass_col = 'Team_Abbr' if 'Team_Abbr' in pass_df.columns else 'Tm'
-        rush_col = 'Team_Abbr' if 'Team_Abbr' in rush_df.columns else 'Tm'
-        rec_col = 'Team_Abbr' if 'Team_Abbr' in rec_df.columns else 'Tm'
-        
         team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
-        player_passing_data = pass_df[pass_df[pass_col].isin([home_team_abbr, away_team_abbr])]
-        player_rushing_data = rush_df[rush_df[rush_col].isin([home_team_abbr, away_team_abbr])]
-        player_receiving_data = rec_df[rec_df[rec_col].isin([home_team_abbr, away_team_abbr])]
+        player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
+        player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
+        player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
         
-        # FRANCO: THIS IS THE NEW PROMPT STRUCTURE YOU REQUESTED
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
         Use all of the data provided to make the most informed decision.
@@ -210,15 +203,15 @@ def main():
         ---
         ## {home_team_full} (Home) Data
         - Defense: {team_defense_data[team_defense_data['Team_Full'] == home_team_full].to_string()}
-        - Passing Offense: {player_passing_data[player_passing_data[pass_col] == home_team_abbr].to_string()}
-        - Rushing Offense: {player_rushing_data[player_rushing_data[rush_col] == home_team_abbr].to_string()}
-        - Receiving Offense: {player_receiving_data[player_receiving_data[rec_col] == home_team_abbr].to_string()}
+        - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == home_team_abbr].to_string()}
+        - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == home_team_abbr].to_string()}
+        - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == home_team_abbr].to_string()}
 
         ## {away_team_full} (Away) Data
         - Defense: {team_defense_data[team_defense_data['Team_Full'] == away_team_full].to_string()}
-        - Passing Offense: {player_passing_data[player_passing_data[pass_col] == away_team_abbr].to_string()}
-        - Rushing Offense: {player_rushing_data[player_rushing_data[rush_col] == away_team_abbr].to_string()}
-        - Receiving Offense: {player_receiving_data[player_receiving_data[rec_col] == away_team_abbr].to_string()}
+        - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == away_team_abbr].to_string()}
+        - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == away_team_abbr].to_string()}
+        - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == away_team_abbr].to_string()}
         ---
 
         Based on the structured data above, provide the following in a clear format:

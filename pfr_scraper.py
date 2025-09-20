@@ -13,7 +13,7 @@ import re # Import the regular expression module
 
 # --- CONFIGURATION ---
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
-YEAR = 2025 # Assuming this is for the season starting in 2025
+YEAR = 2024 # Assuming this is for the season starting in 2025
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # --- Google Sheets Authentication ---
@@ -34,6 +34,7 @@ def get_gspread_client():
 
 # --- Helper Function to Write to a Sheet Tab ---
 def write_to_sheet(spreadsheet, sheet_name, dataframe):
+    prefixed_sheet_name = f"2024_{sheet_name}"
     print(f"  -> Writing data to '{sheet_name}' tab...")
     if dataframe.empty:
         print(f"  -> Data is empty for {sheet_name}.")

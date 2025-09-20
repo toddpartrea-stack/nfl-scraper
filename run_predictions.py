@@ -49,6 +49,45 @@ def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, predictio
     except Exception as e:
         print(f"  -> ❌ Error writing prediction to sheet: {e}")
 
+# --- FRANCO: NEW FUNCTION TO IDENTIFY INJURED PLAYERS ---
+def get_injured_players_set(injuries_df):
+    """
+    Reads the Injuries DataFrame, identifies players who will not play based on keywords
+    in their status, and returns a set of their names for fast filtering.
+    """
+    # Based on your scraper, the player name and status columns are 'Player' and 'Game Status'
+    PLAYER_NAME_COLUMN = 'Player'
+    STATUS_COLUMN = 'Game Status'
+
+    if PLAYER_NAME_COLUMN not in injuries_df.columns or STATUS_COLUMN not in injuries_df.columns:
+        print(f"Warning: Could not find '{PLAYER_NAME_COLUMN}' or '{STATUS_COLUMN}' in the Injuries tab. Skipping injury filter.")
+        return set()
+
+    # The confirmed list of keywords that mean a player is out.
+    OUT_KEYWORDS = [
+        'IR', 
+        'Injured Reserve', 
+        'Out', 
+        'Physically Unable to Perform', 
+        'PUP', 
+        'NFI'
+    ]
+
+    # Combine keywords into a search pattern: 'IR|Out|PUP|etc.'
+    search_pattern = '|'.join(OUT_KEYWORDS)
+    
+    # Ensure the status column is a string to prevent errors with .str accessor
+    injuries_df[STATUS_COLUMN] = injuries_df[STATUS_COLUMN].astype(str)
+
+    # Filter the DataFrame to find rows where the status contains any of our keywords (case-insensitive)
+    injured_subset_df = injuries_df[injuries_df[STATUS_COLUMN].str.contains(search_pattern, case=False, na=False)]
+
+    # Create the final set of player names. A set is used for very fast lookups.
+    injured_players = set(injured_subset_df[PLAYER_NAME_COLUMN])
+    
+    print(f"Identified {len(injured_players)} players who are out.")
+    return injured_players
+
 # --- Main execution block ---
 def main():
     print("Authenticating with Google Sheets...")
@@ -85,11 +124,31 @@ def main():
         print(f"❌ Error configuring Gemini API: {e}")
         return
 
-    # Check for required tabs, now including Power_Rankings
+    # Check for required tabs
     required_tabs = ['Schedule', 'D_Overall', 'O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving', 'Injuries', 'team_match', 'Power_Rankings']
     if not all(tab in dataframes for tab in required_tabs):
         print(f"\n❌ Could not find all necessary data tabs. Found: {list(dataframes.keys())}")
         return
+        
+    # --- FRANCO: GET THE SET OF INJURED PLAYERS ---
+    print("\nFiltering out injured players from offensive stats...")
+    injured_players_set = get_injured_players_set(dataframes['Injuries'])
+
+    # --- FRANCO: REMOVE INJURED PLAYERS FROM OFFENSIVE DATAFRAMES ---
+    # We use the `~` symbol, which means NOT, to keep only the players NOT IN the injured set.
+    for stat_sheet_name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']:
+        df = dataframes[stat_sheet_name]
+        if 'Player' in df.columns:
+            initial_rows = len(df)
+            # The 'Player' column in PFR data often has special characters like '*' or '+' which we remove.
+            cleaned_player_col = df['Player'].str.replace(r'[*+]', '', regex=True).str.strip()
+            df = df[~cleaned_player_col.isin(injured_players_set)]
+            
+            dataframes[stat_sheet_name] = df # Update the dictionary with the filtered dataframe
+            filtered_rows = len(df)
+            print(f"  -> Removed {initial_rows - filtered_rows} injured players from {stat_sheet_name}.")
+        else:
+            print(f"Warning: 'Player' column not found in '{stat_sheet_name}', cannot filter.")
 
     # Clear old predictions
     try:
@@ -131,18 +190,20 @@ def main():
 
         print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
 
-        # Prepare all data for the prompt, now including Power Rankings
+        # Prepare all data for the prompt, which now uses the FILTERED dataframes
         power_rankings_data = dataframes['Power_Rankings']
         home_power_rankings = power_rankings_data[power_rankings_data['Team'].str.contains(home_team_full, case=False, na=False)]
         away_power_rankings = power_rankings_data[power_rankings_data['Team'].str.contains(away_team_full, case=False, na=False)]
         
         team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
+        # These now pull from the dataframes that have had injured players removed.
         player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
         player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
         player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
-        injury_data = dataframes['Injuries'][dataframes['Injuries']['Team_Full'].isin([home_team_full, away_team_full])]
+        # We still send the raw injury data so the AI knows who is out.
+        injury_data = dataframes['Injuries'][dataframes['Injuries']['Team'].isin([home_team_full, away_team_full])]
         
-        # Updated prompt with Power Rankings
+        # Updated prompt - no changes needed here as the data is already clean
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
         Use all of the data provided to make the most informed decision.
@@ -154,7 +215,7 @@ def main():
         - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == home_team_abbr].to_string()}
         - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == home_team_abbr].to_string()}
         - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == home_team_abbr].to_string()}
-        - Injuries: {injury_data[injury_data['Team_Full'] == home_team_full].to_string()}
+        - Injuries: {injury_data[injury_data['Team'] == home_team_full].to_string()}
 
         ## {away_team_full} (Away) Data
         - Power Ranking: {away_power_rankings.to_string()}
@@ -162,7 +223,7 @@ def main():
         - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == away_team_abbr].to_string()}
         - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == away_team_abbr].to_string()}
         - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == away_team_abbr].to_string()}
-        - Injuries: {injury_data[injury_data['Team_Full'] == away_team_full].to_string()}
+        - Injuries: {injury_data[injury_data['Team'] == away_team_full].to_string()}
         ---
 
         Based on the structured data above, provide the following in a clear format:

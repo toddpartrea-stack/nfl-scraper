@@ -34,6 +34,7 @@ def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, predictio
     try:
         sheet_name = "Predictions"
         worksheet = spreadsheet.worksheet(sheet_name)
+        # Simplified parsing logic for the new prompt format
         justification = prediction_text.strip()
         winner_match = re.search(r"Predicted Winner:\s*(.*)", prediction_text)
         score_match = re.search(r"Predicted Final Score:\s*(.*)", prediction_text)
@@ -54,7 +55,6 @@ def normalize_player_name(name):
 
 def get_player_statuses_from_depth_chart(depth_chart_df):
     out_statuses = ['O', 'IR', 'PUP', 'NFI', 'IR-R']
-    q_players_df = depth_chart_df[depth_chart_df['Status'] == 'Q']
     out_players_df = depth_chart_df[depth_chart_df['Status'].isin(out_statuses)]
     out_players_set = {normalize_player_name(name) for name in out_players_df['Player']}
     print(f"Found {len(out_players_set)} players who are OUT from the depth chart.")
@@ -92,7 +92,7 @@ def main():
         print(f"\n❌ Could not find all necessary data tabs. Found: {list(dataframes.keys())}")
         return
         
-    # --- FRANCO: BUILD MASTER MAPS FROM YOUR ROSETTA STONE ---
+    # Build Master Maps from your Rosetta Stone
     print("\nBuilding team name master map from 'team_match' sheet...")
     team_map_df = dataframes['team_match']
     master_team_map = {}
@@ -103,15 +103,12 @@ def main():
         abbr = row['Abbreviation']
         injury_team_name = row['Injury team']
         
-        # Map all known variations to the one standard Full Name
         if full_name: master_team_map[full_name] = full_name
         if abbr: master_team_map[abbr] = full_name
         if injury_team_name: master_team_map[injury_team_name] = full_name
-        
-        # Create the reverse map from Full Name to Abbreviation
         if full_name and abbr: full_name_to_abbr[full_name] = abbr
     
-    # --- FRANCO: STANDARDIZE ALL DATAFRAMES USING THE MASTER MAP ---
+    # Standardize All DataFrames using the Master Map
     print("\nStandardizing team names across all data sheets...")
     possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm']
     
@@ -119,7 +116,7 @@ def main():
         team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
         if team_col_found:
             df['Team_Full'] = df[team_col_found].map(master_team_map)
-            df.dropna(subset=['Team_Full'], inplace=True) # Drop rows that couldn't be mapped (e.g., "League Average")
+            df.dropna(subset=['Team_Full'], inplace=True)
             df['Team_Abbr'] = df['Team_Full'].map(full_name_to_abbr)
             print(f"  -> Standardized team names for '{name}' sheet.")
 
@@ -163,8 +160,8 @@ def main():
     depth_chart_df['Depth'] = pd.to_numeric(depth_chart_df['Depth'], errors='coerce')
 
     for index, game in this_weeks_games.iterrows():
-        home_team_full = game['Loser/tie'] if game['Unnamed: 5'] == '@' else game['Winner/tie']
-        away_team_full = game['Winner/tie'] if game['Unnamed: 5'] == '@' else game['Loser/tie']
+        home_team_full = game['Team_Full']
+        away_team_full = [x for x in [game['Winner/tie'], game['Loser/tie']] if x != home_team_full][0]
 
         print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
 
@@ -189,11 +186,22 @@ def main():
         home_team_abbr = full_name_to_abbr.get(home_team_full)
         away_team_abbr = full_name_to_abbr.get(away_team_full)
         
-        team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
-        player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
-        player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
-        player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
+        # FRANCO: THIS IS THE DEFINITIVE FIX FOR THE KEYERROR
+        # Use the flexible column name to filter the data for the prompt
+        pass_df = dataframes['O_Player_Passing']
+        rush_df = dataframes['O_Player_Rushing']
+        rec_df = dataframes['O_Player_Receiving']
+
+        pass_col = 'Team_Abbr' if 'Team_Abbr' in pass_df.columns else 'Tm'
+        rush_col = 'Team_Abbr' if 'Team_Abbr' in rush_df.columns else 'Tm'
+        rec_col = 'Team_Abbr' if 'Team_Abbr' in rec_df.columns else 'Tm'
         
+        team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
+        player_passing_data = pass_df[pass_df[pass_col].isin([home_team_abbr, away_team_abbr])]
+        player_rushing_data = rush_df[rush_df[rush_col].isin([home_team_abbr, away_team_abbr])]
+        player_receiving_data = rec_df[rec_df[rec_col].isin([home_team_abbr, away_team_abbr])]
+        
+        # FRANCO: THIS IS THE NEW PROMPT STRUCTURE YOU REQUESTED
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
         Use all of the data provided to make the most informed decision.
@@ -201,16 +209,16 @@ def main():
         {key_questionable_text}
         ---
         ## {home_team_full} (Home) Data
-        - Defense: {team_defense_data.to_string()}
-        - Passing Offense: {player_passing_data.to_string()}
-        - Rushing Offense: {player_rushing_data.to_string()}
-        - Receiving Offense: {player_receiving_data.to_string()}
+        - Defense: {team_defense_data[team_defense_data['Team_Full'] == home_team_full].to_string()}
+        - Passing Offense: {player_passing_data[player_passing_data[pass_col] == home_team_abbr].to_string()}
+        - Rushing Offense: {player_rushing_data[player_rushing_data[rush_col] == home_team_abbr].to_string()}
+        - Receiving Offense: {player_receiving_data[player_receiving_data[rec_col] == home_team_abbr].to_string()}
 
         ## {away_team_full} (Away) Data
         - Defense: {team_defense_data[team_defense_data['Team_Full'] == away_team_full].to_string()}
-        - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == away_team_abbr].to_string()}
-        - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == away_team_abbr].to_string()}
-        - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == away_team_abbr].to_string()}
+        - Passing Offense: {player_passing_data[player_passing_data[pass_col] == away_team_abbr].to_string()}
+        - Rushing Offense: {player_rushing_data[player_rushing_data[rush_col] == away_team_abbr].to_string()}
+        - Receiving Offense: {player_receiving_data[player_receiving_data[rec_col] == away_team_abbr].to_string()}
         ---
 
         Based on the structured data above, provide the following in a clear format:
@@ -218,7 +226,7 @@ def main():
         2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
         3. **Justification:** A brief justification. You MUST specifically mention any "Key Players with Questionable Status" and describe how their potential absence could impact the outcome.
         4. **Key Player Stat Predictions:** Predict stats for key players expected to play provide a confidence percentage from 1% to 100%.
-        5. **Touchdown Scorers:** List 2-3 players most likely to score a touchdown provide a confidence percentage from 1% to 100% .
+        5. **Touchdown Scorers:** List 2-3 players most likely to score a touchdown provide a confidence percentage from 1% to 100%.
         """
         
         try:

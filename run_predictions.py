@@ -13,6 +13,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+YEAR = 2025 # FRANCO: ADDED THE MISSING YEAR VARIABLE
 
 # --- Google Sheets Authentication (Your working version) ---
 def get_gspread_client():
@@ -43,7 +44,7 @@ def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, predictio
     except Exception as e:
         print(f"  -> ❌ Error writing prediction to sheet: {e}")
 
-# --- FRANCO: NORMALIZATION AND STATUS FUNCTIONS (REWRITTEN) ---
+# --- FRANCO: NORMALIZATION AND STATUS FUNCTIONS ---
 def normalize_player_name(name):
     """Converts a player name to a simplified, standardized format for matching."""
     if not isinstance(name, str): return ""
@@ -113,17 +114,18 @@ def main():
         print(f"\n❌ Could not find all necessary data tabs. Found: {list(dataframes.keys())}")
         return
         
-    # --- FRANCO: GET PLAYER STATUSES FROM THE RELIABLE DEPTH CHART SOURCE ---
+    # Get player statuses from the depth chart
     print("\nFiltering players based on Depth Chart status...")
     out_players_normalized, questionable_players_normalized = get_player_statuses_from_depth_chart(dataframes['Depth_Charts'])
 
+    # Remove "out" players from offensive stats
     for stat_sheet_name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']:
         df = dataframes[stat_sheet_name]
         if 'Player' in df.columns:
             normalized_stats_names = df['Player'].apply(normalize_player_name)
             is_out_mask = normalized_stats_names.isin(out_players_normalized)
             removed_players = df[is_out_mask]['Player'].tolist()
-            dataframes[stat_sheet_name] = df[~is_out_mask] # Update with filtered data
+            dataframes[stat_sheet_name] = df[~is_out_mask]
             if removed_players:
                 print(f"  -> From {stat_sheet_name}, removed {len(removed_players)} players: {removed_players}")
 
@@ -131,20 +133,20 @@ def main():
     try:
         predictions_sheet = spreadsheet.worksheet("Predictions")
         predictions_sheet.clear()
-        predictions_sheet.update('A1:F1', [['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
+        # FRANCO: FIXED DEPRECATION WARNING by using named arguments
+        predictions_sheet.update(range_name='A1:F1', values=[['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
         print("\nCleared old data from 'Predictions' tab.")
     except gspread.WorksheetNotFound:
         worksheet = spreadsheet.add_worksheet(title="Predictions", rows=1, cols=6)
-        worksheet.update('A1:F1', [['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
+        worksheet.update(range_name='A1:F1', values=[['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
 
     # Data Standardization
     team_map_df = dataframes['team_match']
     abbr_to_full = pd.Series(team_map_df['Full Name'].values, index=team_map_df['Abbreviation']).to_dict()
     full_to_abbr = pd.Series(team_map_df['Abbreviation'].values, index=team_map_df['Full Name']).to_dict()
     
-    # Add team name normalization to all relevant dataframes
     for name, df in dataframes.items():
-        if 'Team' in df.columns: # Standardize 'Team' column from various sources
+        if 'Team' in df.columns:
              df['Team_Full'] = df['Team'].map(abbr_to_full).fillna(df['Team'])
         elif 'Tm' in df.columns:
              df['Team_Full'] = df['Tm'].map(abbr_to_full).fillna(df['Tm'])
@@ -153,9 +155,9 @@ def main():
     schedule_df = dataframes['Schedule']
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
     today = datetime.now()
-    # Simplified week calculation
     current_week = 1 
     if not schedule_df.empty:
+        # FRANCO: This line now works because YEAR is defined at the top
         schedule_df['parsed_date'] = pd.to_datetime(schedule_df['Date'] + f", {YEAR}", errors='coerce')
         future_games = schedule_df[schedule_df['parsed_date'] >= today]
         if not future_games.empty:
@@ -174,7 +176,7 @@ def main():
 
         print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
 
-        # --- FRANCO: IDENTIFY KEY QUESTIONABLE PLAYERS FOR THE PROMPT ---
+        # Identify key questionable players for the prompt
         key_positions = ['QB', 'RB', 'WR', 'TE']
         questionable_players_df = depth_chart_df[
             (depth_chart_df['Status'] == 'Q') &
@@ -202,7 +204,7 @@ def main():
         player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Tm'].isin([home_team_abbr, away_team_abbr])]
         player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Tm'].isin([home_team_abbr, away_team_abbr])]
         
-        # --- FRANCO: FINAL, UPDATED PROMPT ---
+        # The final, updated prompt
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
         Use all of the data provided to make the most informed decision.
@@ -224,10 +226,10 @@ def main():
 
         Based on the structured data above, provide the following in a clear format:
         1. **Game Prediction:** Predicted Winner and Predicted Final Score.
-        2. **Outcome Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
-        3. **Justification:** A brief justification for your overall prediction. **You MUST specifically mention any "Key Players with Questionable Status" listed above** and describe how their potential absence or limited performance could impact the game's outcome.
-        4. **Key Player Stat Predictions:** Predict stats for the key offensive players expected to play.
-        5. **Touchdown Scorers:** List 2-3 players most likely to score a touchdown.
+        2. **Final Score Confidence** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
+        2. **Justification:** A brief justification for your overall prediction. **You MUST specifically mention any "Key Players with Questionable Status" listed above** and describe how their potential absence or limited performance could impact the game's outcome.
+        3. **Key Player Stat Predictions:** Predict stats for the key offensive players expected to play and provide a confidence percentage from 1% to 100%. 
+        4. **Touchdown Scorers:** List 2-3 players most likely to score a touchdown.
         """
         
         try:
@@ -240,7 +242,7 @@ def main():
         except Exception as e:
             print(f"Could not generate prediction for this matchup: {e}")
         
-        time.sleep(20) # Increased sleep time for API rate limits
+        time.sleep(20)
 
 if __name__ == "__main__":
     main()

@@ -54,13 +54,11 @@ def normalize_player_name(name):
 
 def get_player_statuses_from_depth_chart(depth_chart_df):
     out_statuses = ['O', 'IR', 'PUP', 'NFI', 'IR-R']
-    questionable_statuses = ['Q']
+    q_players_df = depth_chart_df[depth_chart_df['Status'] == 'Q']
     out_players_df = depth_chart_df[depth_chart_df['Status'].isin(out_statuses)]
-    q_players_df = depth_chart_df[depth_chart_df['Status'].isin(questionable_statuses)]
     out_players_set = {normalize_player_name(name) for name in out_players_df['Player']}
-    q_players_set = {normalize_player_name(name) for name in q_players_df['Player']}
-    print(f"Found {len(out_players_set)} players who are OUT and {len(q_players_set)} who are QUESTIONABLE.")
-    return out_players_set, q_players_set
+    print(f"Found {len(out_players_set)} players who are OUT from the depth chart.")
+    return out_players_set
 
 # --- Main execution block ---
 def main():
@@ -80,7 +78,6 @@ def main():
     try:
         for worksheet in spreadsheet.worksheets():
             title = worksheet.title
-            if title.lower() in ['predictions']: continue
             data = worksheet.get_all_values()
             if data:
                 dataframes[title] = pd.DataFrame(data[1:], columns=data[0])
@@ -89,26 +86,46 @@ def main():
         print(f"❌ Error loading sheet: {e}")
         return
         
-    # Configure Gemini API
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        print("\n✅ Gemini API configured.")
-    except Exception as e:
-        print(f"❌ Error configuring Gemini API: {e}")
-        return
-
     # Check for required tabs
     required_tabs = ['Schedule', 'D_Overall', 'O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving', 'Depth_Charts', 'team_match']
     if not all(tab in dataframes for tab in required_tabs):
         print(f"\n❌ Could not find all necessary data tabs. Found: {list(dataframes.keys())}")
         return
         
-    # Get player statuses from the depth chart
-    print("\nFiltering players based on Depth Chart status...")
-    out_players_normalized, questionable_players_normalized = get_player_statuses_from_depth_chart(dataframes['Depth_Charts'])
+    # --- FRANCO: BUILD MASTER MAPS FROM YOUR ROSETTA STONE ---
+    print("\nBuilding team name master map from 'team_match' sheet...")
+    team_map_df = dataframes['team_match']
+    master_team_map = {}
+    full_name_to_abbr = {}
 
-    # Remove "out" players from offensive stats
+    for _, row in team_map_df.iterrows():
+        full_name = row['Full Name']
+        abbr = row['Abbreviation']
+        injury_team_name = row['Injury team']
+        
+        # Map all known variations to the one standard Full Name
+        if full_name: master_team_map[full_name] = full_name
+        if abbr: master_team_map[abbr] = full_name
+        if injury_team_name: master_team_map[injury_team_name] = full_name
+        
+        # Create the reverse map from Full Name to Abbreviation
+        if full_name and abbr: full_name_to_abbr[full_name] = abbr
+    
+    # --- FRANCO: STANDARDIZE ALL DATAFRAMES USING THE MASTER MAP ---
+    print("\nStandardizing team names across all data sheets...")
+    possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm']
+    
+    for name, df in dataframes.items():
+        team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
+        if team_col_found:
+            df['Team_Full'] = df[team_col_found].map(master_team_map)
+            df.dropna(subset=['Team_Full'], inplace=True) # Drop rows that couldn't be mapped (e.g., "League Average")
+            df['Team_Abbr'] = df['Team_Full'].map(full_name_to_abbr)
+            print(f"  -> Standardized team names for '{name}' sheet.")
+
+    # Get player statuses and filter "out" players
+    print("\nFiltering players based on Depth Chart status...")
+    out_players_normalized = get_player_statuses_from_depth_chart(dataframes['Depth_Charts'])
     for stat_sheet_name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']:
         df = dataframes[stat_sheet_name]
         if 'Player' in df.columns:
@@ -129,31 +146,15 @@ def main():
         worksheet = spreadsheet.add_worksheet(title="Predictions", rows=1, cols=6)
         worksheet.update(range_name='A1:F1', values=[['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
 
-    # --- FRANCO: RESTORED MORE ROBUST DATA STANDARDIZATION LOGIC ---
-    print("\nStandardizing team names across all data sheets...")
-    team_map_df = dataframes['team_match']
-    abbr_to_full = pd.Series(team_map_df['Full Name'].values, index=team_map_df['Abbreviation']).to_dict()
-    full_to_abbr = pd.Series(team_map_df['Abbreviation'].values, index=team_map_df['Full Name']).to_dict()
-    
-    # This list contains all possible names for the team column across your sheets
-    possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm']
-    
-    for name, df in dataframes.items():
-        # Find which of the possible column names exists in this specific dataframe
-        team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
-        
-        if team_col_found:
-            # Create the standardized 'Team_Full' and 'Team_Abbr' columns
-            df['Team_Full'] = df[team_col_found].map(abbr_to_full).fillna(df[team_col_found])
-            df['Team_Abbr'] = df['Team_Full'].map(full_to_abbr) # Create abbreviation from the full name
-            print(f"  -> Standardized team names for '{name}' sheet.")
+    # Configure Gemini API
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    print("\n✅ Gemini API configured.")
 
     # Find the current week's games
     schedule_df = dataframes['Schedule']
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
-    today = datetime.now()
-    current_week = 3 # Current week is 3
-    
+    current_week = 3
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week].dropna(subset=['Winner/tie', 'Loser/tie'])
     
     print(f"\nFound {len(this_weeks_games)} games for Week {current_week}. Starting analysis...")
@@ -175,11 +176,8 @@ def main():
             (depth_chart_df['Position'].isin(key_positions)) &
             (depth_chart_df['Team_Full'].isin([home_team_full, away_team_full]))
         ]
-        
-        home_q_players = questionable_players_df[questionable_players_df['Team_Full'] == home_team_full]
-        away_q_players = questionable_players_df[questionable_players_df['Team_Full'] == away_team_full]
-        home_q_list = [f"{row['Player']} ({row['Position']})" for i, row in home_q_players.iterrows()]
-        away_q_list = [f"{row['Player']} ({row['Position']})" for i, row in away_q_players.iterrows()]
+        home_q_list = [f"{row['Player']} ({row['Position']})" for i, row in questionable_players_df[questionable_players_df['Team_Full'] == home_team_full].iterrows()]
+        away_q_list = [f"{row['Player']} ({row['Position']})" for i, row in questionable_players_df[questionable_players_df['Team_Full'] == away_team_full].iterrows()]
         
         key_questionable_text = f"""
         ## Key Players with Questionable Status
@@ -188,14 +186,14 @@ def main():
         """
 
         # Prepare all other data for the prompt
-        home_team_abbr = full_to_abbr.get(home_team_full)
-        away_team_abbr = full_to_abbr.get(away_team_full)
+        home_team_abbr = full_name_to_abbr.get(home_team_full)
+        away_team_abbr = full_name_to_abbr.get(away_team_full)
+        
         team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
         player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
         player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
         player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
         
-        # The final, updated prompt
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
         Use all of the data provided to make the most informed decision.
@@ -203,10 +201,10 @@ def main():
         {key_questionable_text}
         ---
         ## {home_team_full} (Home) Data
-        - Defense: {team_defense_data[team_defense_data['Team_Full'] == home_team_full].to_string()}
-        - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == home_team_abbr].to_string()}
-        - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == home_team_abbr].to_string()}
-        - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == away_team_abbr].to_string()}
+        - Defense: {team_defense_data.to_string()}
+        - Passing Offense: {player_passing_data.to_string()}
+        - Rushing Offense: {player_rushing_data.to_string()}
+        - Receiving Offense: {player_receiving_data.to_string()}
 
         ## {away_team_full} (Away) Data
         - Defense: {team_defense_data[team_defense_data['Team_Full'] == away_team_full].to_string()}
@@ -217,18 +215,17 @@ def main():
 
         Based on the structured data above, provide the following in a clear format:
         1. **Game Prediction:** Predicted Winner and Predicted Final Score.
-        2. **Justification:** A brief justification for your overall prediction. **You MUST specifically mention any "Key Players with Questionable Status" listed above** and describe how their potential absence or limited performance could impact the game's outcome.
-        3. **Key Player Stat Predictions:** Predict stats for the key offensive players expected to play.
-        4. **Touchdown Scorers:** List 2-3 players most likely to score a touchdown.
+        2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
+        3. **Justification:** A brief justification. You MUST specifically mention any "Key Players with Questionable Status" and describe how their potential absence could impact the outcome.
+        4. **Key Player Stat Predictions:** Predict stats for key players expected to play provide a confidence percentage from 1% to 100%.
+        5. **Touchdown Scorers:** List 2-3 players most likely to score a touchdown provide a confidence percentage from 1% to 100% .
         """
         
         try:
             response = model.generate_content(matchup_prompt)
             print("--- PREDICTION (Raw Text) ---")
             print(response.text)
-            
             write_prediction_to_sheet(spreadsheet, current_week, away_team_full, home_team_full, response.text)
-
         except Exception as e:
             print(f"Could not generate prediction for this matchup: {e}")
         

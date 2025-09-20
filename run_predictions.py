@@ -13,9 +13,9 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-YEAR = 2025 # FRANCO: ADDED THE MISSING YEAR VARIABLE
+YEAR = 2025
 
-# --- Google Sheets Authentication (Your working version) ---
+# --- Google Sheets Authentication ---
 def get_gspread_client():
     creds = None
     if os.path.exists('token.pickle'):
@@ -29,7 +29,7 @@ def get_gspread_client():
             return None
     return gspread.authorize(creds)
 
-# --- Function to write predictions to the sheet (Your working version) ---
+# --- Function to write predictions to the sheet ---
 def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, prediction_text):
     try:
         sheet_name = "Predictions"
@@ -44,9 +44,8 @@ def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, predictio
     except Exception as e:
         print(f"  -> ❌ Error writing prediction to sheet: {e}")
 
-# --- FRANCO: NORMALIZATION AND STATUS FUNCTIONS ---
+# --- Normalization and Status Functions ---
 def normalize_player_name(name):
-    """Converts a player name to a simplified, standardized format for matching."""
     if not isinstance(name, str): return ""
     name = name.lower()
     name = re.sub(r'\s+(jr|sr|ii|iii|iv)[\.]*$', '', name) 
@@ -54,21 +53,12 @@ def normalize_player_name(name):
     return name.strip()
 
 def get_player_statuses_from_depth_chart(depth_chart_df):
-    """
-    Reads the Depth_Charts DataFrame and returns two sets of normalized player names:
-    one for players who are OUT, and one for players who are QUESTIONABLE.
-    """
     out_statuses = ['O', 'IR', 'PUP', 'NFI', 'IR-R']
     questionable_statuses = ['Q']
-
-    # Filter DataFrame for players with a relevant status
     out_players_df = depth_chart_df[depth_chart_df['Status'].isin(out_statuses)]
     q_players_df = depth_chart_df[depth_chart_df['Status'].isin(questionable_statuses)]
-    
-    # Create sets of normalized names
     out_players_set = {normalize_player_name(name) for name in out_players_df['Player']}
     q_players_set = {normalize_player_name(name) for name in q_players_df['Player']}
-
     print(f"Found {len(out_players_set)} players who are OUT and {len(q_players_set)} who are QUESTIONABLE.")
     return out_players_set, q_players_set
 
@@ -133,36 +123,37 @@ def main():
     try:
         predictions_sheet = spreadsheet.worksheet("Predictions")
         predictions_sheet.clear()
-        # FRANCO: FIXED DEPRECATION WARNING by using named arguments
         predictions_sheet.update(range_name='A1:F1', values=[['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
         print("\nCleared old data from 'Predictions' tab.")
     except gspread.WorksheetNotFound:
         worksheet = spreadsheet.add_worksheet(title="Predictions", rows=1, cols=6)
         worksheet.update(range_name='A1:F1', values=[['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
 
-    # Data Standardization
+    # --- FRANCO: RESTORED MORE ROBUST DATA STANDARDIZATION LOGIC ---
+    print("\nStandardizing team names across all data sheets...")
     team_map_df = dataframes['team_match']
     abbr_to_full = pd.Series(team_map_df['Full Name'].values, index=team_map_df['Abbreviation']).to_dict()
     full_to_abbr = pd.Series(team_map_df['Abbreviation'].values, index=team_map_df['Full Name']).to_dict()
     
+    # This list contains all possible names for the team column across your sheets
+    possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm']
+    
     for name, df in dataframes.items():
-        if 'Team' in df.columns:
-             df['Team_Full'] = df['Team'].map(abbr_to_full).fillna(df['Team'])
-        elif 'Tm' in df.columns:
-             df['Team_Full'] = df['Tm'].map(abbr_to_full).fillna(df['Tm'])
+        # Find which of the possible column names exists in this specific dataframe
+        team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
+        
+        if team_col_found:
+            # Create the standardized 'Team_Full' and 'Team_Abbr' columns
+            df['Team_Full'] = df[team_col_found].map(abbr_to_full).fillna(df[team_col_found])
+            df['Team_Abbr'] = df['Team_Full'].map(full_to_abbr) # Create abbreviation from the full name
+            print(f"  -> Standardized team names for '{name}' sheet.")
 
     # Find the current week's games
     schedule_df = dataframes['Schedule']
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
     today = datetime.now()
-    current_week = 1 
-    if not schedule_df.empty:
-        # FRANCO: This line now works because YEAR is defined at the top
-        schedule_df['parsed_date'] = pd.to_datetime(schedule_df['Date'] + f", {YEAR}", errors='coerce')
-        future_games = schedule_df[schedule_df['parsed_date'] >= today]
-        if not future_games.empty:
-            current_week = future_games['Week'].min()
-
+    current_week = 3 # Current week is 3
+    
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week].dropna(subset=['Winner/tie', 'Loser/tie'])
     
     print(f"\nFound {len(this_weeks_games)} games for Week {current_week}. Starting analysis...")
@@ -200,9 +191,9 @@ def main():
         home_team_abbr = full_to_abbr.get(home_team_full)
         away_team_abbr = full_to_abbr.get(away_team_full)
         team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
-        player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Tm'].isin([home_team_abbr, away_team_abbr])]
-        player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Tm'].isin([home_team_abbr, away_team_abbr])]
-        player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Tm'].isin([home_team_abbr, away_team_abbr])]
+        player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
+        player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
+        player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
         
         # The final, updated prompt
         matchup_prompt = f"""
@@ -213,22 +204,21 @@ def main():
         ---
         ## {home_team_full} (Home) Data
         - Defense: {team_defense_data[team_defense_data['Team_Full'] == home_team_full].to_string()}
-        - Passing Offense: {player_passing_data[player_passing_data['Tm'] == home_team_abbr].to_string()}
-        - Rushing Offense: {player_rushing_data[player_rushing_data['Tm'] == home_team_abbr].to_string()}
-        - Receiving Offense: {player_receiving_data[player_receiving_data['Tm'] == away_team_abbr].to_string()}
+        - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == home_team_abbr].to_string()}
+        - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == home_team_abbr].to_string()}
+        - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == away_team_abbr].to_string()}
 
         ## {away_team_full} (Away) Data
         - Defense: {team_defense_data[team_defense_data['Team_Full'] == away_team_full].to_string()}
-        - Passing Offense: {player_passing_data[player_passing_data['Tm'] == away_team_abbr].to_string()}
-        - Rushing Offense: {player_rushing_data[player_rushing_data['Tm'] == away_team_abbr].to_string()}
-        - Receiving Offense: {player_receiving_data[player_receiving_data['Tm'] == away_team_abbr].to_string()}
+        - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == away_team_abbr].to_string()}
+        - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == away_team_abbr].to_string()}
+        - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == away_team_abbr].to_string()}
         ---
 
         Based on the structured data above, provide the following in a clear format:
         1. **Game Prediction:** Predicted Winner and Predicted Final Score.
-        2. **Final Score Confidence** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
         2. **Justification:** A brief justification for your overall prediction. **You MUST specifically mention any "Key Players with Questionable Status" listed above** and describe how their potential absence or limited performance could impact the game's outcome.
-        3. **Key Player Stat Predictions:** Predict stats for the key offensive players expected to play and provide a confidence percentage from 1% to 100%. 
+        3. **Key Player Stat Predictions:** Predict stats for the key offensive players expected to play.
         4. **Touchdown Scorers:** List 2-3 players most likely to score a touchdown.
         """
         

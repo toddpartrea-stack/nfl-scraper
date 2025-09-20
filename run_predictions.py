@@ -32,61 +32,44 @@ def get_gspread_client():
 def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, prediction_text):
     try:
         sheet_name = "Predictions"
-        try:
-            worksheet = spreadsheet.worksheet(sheet_name)
-        except gspread.WorksheetNotFound:
-            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1, cols=6)
-            worksheet.update('A1:F1', [['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
-
+        worksheet = spreadsheet.worksheet(sheet_name)
         justification = prediction_text.strip()
         winner_match = re.search(r"Predicted Winner:\s*(.*)", prediction_text)
         score_match = re.search(r"Predicted Final Score:\s*(.*)", prediction_text)
         winner = winner_match.group(1).strip() if winner_match else "See Justification"
         score = score_match.group(1).strip() if score_match else "See Justification"
-
         worksheet.append_row([week, away_team, home_team, winner, score, justification])
         print(f"  -> ✅ Prediction for {away_team} @ {home_team} written to sheet.")
     except Exception as e:
         print(f"  -> ❌ Error writing prediction to sheet: {e}")
 
-# --- FRANCO: NEW FUNCTION TO IDENTIFY INJURED PLAYERS ---
-def get_injured_players_set(injuries_df):
+# --- FRANCO: NORMALIZATION AND STATUS FUNCTIONS (REWRITTEN) ---
+def normalize_player_name(name):
+    """Converts a player name to a simplified, standardized format for matching."""
+    if not isinstance(name, str): return ""
+    name = name.lower()
+    name = re.sub(r'\s+(jr|sr|ii|iii|iv)[\.]*$', '', name) 
+    name = re.sub(r'[.\'"+*]', '', name)
+    return name.strip()
+
+def get_player_statuses_from_depth_chart(depth_chart_df):
     """
-    Reads the Injuries DataFrame, identifies players who will not play based on keywords
-    in their status, and returns a set of their names for fast filtering.
+    Reads the Depth_Charts DataFrame and returns two sets of normalized player names:
+    one for players who are OUT, and one for players who are QUESTIONABLE.
     """
-    # Based on your scraper, the player name and status columns are 'Player' and 'Game Status'
-    PLAYER_NAME_COLUMN = 'Player'
-    STATUS_COLUMN = 'Game Status'
+    out_statuses = ['O', 'IR', 'PUP', 'NFI', 'IR-R']
+    questionable_statuses = ['Q']
 
-    if PLAYER_NAME_COLUMN not in injuries_df.columns or STATUS_COLUMN not in injuries_df.columns:
-        print(f"Warning: Could not find '{PLAYER_NAME_COLUMN}' or '{STATUS_COLUMN}' in the Injuries tab. Skipping injury filter.")
-        return set()
-
-    # The confirmed list of keywords that mean a player is out.
-    OUT_KEYWORDS = [
-        'IR', 
-        'Injured Reserve', 
-        'Out', 
-        'Physically Unable to Perform', 
-        'PUP', 
-        'NFI'
-    ]
-
-    # Combine keywords into a search pattern: 'IR|Out|PUP|etc.'
-    search_pattern = '|'.join(OUT_KEYWORDS)
+    # Filter DataFrame for players with a relevant status
+    out_players_df = depth_chart_df[depth_chart_df['Status'].isin(out_statuses)]
+    q_players_df = depth_chart_df[depth_chart_df['Status'].isin(questionable_statuses)]
     
-    # Ensure the status column is a string to prevent errors with .str accessor
-    injuries_df[STATUS_COLUMN] = injuries_df[STATUS_COLUMN].astype(str)
+    # Create sets of normalized names
+    out_players_set = {normalize_player_name(name) for name in out_players_df['Player']}
+    q_players_set = {normalize_player_name(name) for name in q_players_df['Player']}
 
-    # Filter the DataFrame to find rows where the status contains any of our keywords (case-insensitive)
-    injured_subset_df = injuries_df[injuries_df[STATUS_COLUMN].str.contains(search_pattern, case=False, na=False)]
-
-    # Create the final set of player names. A set is used for very fast lookups.
-    injured_players = set(injured_subset_df[PLAYER_NAME_COLUMN])
-    
-    print(f"Identified {len(injured_players)} players who are out.")
-    return injured_players
+    print(f"Found {len(out_players_set)} players who are OUT and {len(q_players_set)} who are QUESTIONABLE.")
+    return out_players_set, q_players_set
 
 # --- Main execution block ---
 def main():
@@ -102,7 +85,7 @@ def main():
 
     # Load All Data
     dataframes = {}
-    print("\nLoading and cleaning data from Google Sheet tabs...")
+    print("\nLoading data from Google Sheet tabs...")
     try:
         for worksheet in spreadsheet.worksheets():
             title = worksheet.title
@@ -125,30 +108,24 @@ def main():
         return
 
     # Check for required tabs
-    required_tabs = ['Schedule', 'D_Overall', 'O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving', 'Injuries', 'team_match', 'Power_Rankings']
+    required_tabs = ['Schedule', 'D_Overall', 'O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving', 'Depth_Charts', 'team_match']
     if not all(tab in dataframes for tab in required_tabs):
         print(f"\n❌ Could not find all necessary data tabs. Found: {list(dataframes.keys())}")
         return
         
-    # --- FRANCO: GET THE SET OF INJURED PLAYERS ---
-    print("\nFiltering out injured players from offensive stats...")
-    injured_players_set = get_injured_players_set(dataframes['Injuries'])
+    # --- FRANCO: GET PLAYER STATUSES FROM THE RELIABLE DEPTH CHART SOURCE ---
+    print("\nFiltering players based on Depth Chart status...")
+    out_players_normalized, questionable_players_normalized = get_player_statuses_from_depth_chart(dataframes['Depth_Charts'])
 
-    # --- FRANCO: REMOVE INJURED PLAYERS FROM OFFENSIVE DATAFRAMES ---
-    # We use the `~` symbol, which means NOT, to keep only the players NOT IN the injured set.
     for stat_sheet_name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']:
         df = dataframes[stat_sheet_name]
         if 'Player' in df.columns:
-            initial_rows = len(df)
-            # The 'Player' column in PFR data often has special characters like '*' or '+' which we remove.
-            cleaned_player_col = df['Player'].str.replace(r'[*+]', '', regex=True).str.strip()
-            df = df[~cleaned_player_col.isin(injured_players_set)]
-            
-            dataframes[stat_sheet_name] = df # Update the dictionary with the filtered dataframe
-            filtered_rows = len(df)
-            print(f"  -> Removed {initial_rows - filtered_rows} injured players from {stat_sheet_name}.")
-        else:
-            print(f"Warning: 'Player' column not found in '{stat_sheet_name}', cannot filter.")
+            normalized_stats_names = df['Player'].apply(normalize_player_name)
+            is_out_mask = normalized_stats_names.isin(out_players_normalized)
+            removed_players = df[is_out_mask]['Player'].tolist()
+            dataframes[stat_sheet_name] = df[~is_out_mask] # Update with filtered data
+            if removed_players:
+                print(f"  -> From {stat_sheet_name}, removed {len(removed_players)} players: {removed_players}")
 
     # Clear old predictions
     try:
@@ -157,85 +134,100 @@ def main():
         predictions_sheet.update('A1:F1', [['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
         print("\nCleared old data from 'Predictions' tab.")
     except gspread.WorksheetNotFound:
-        pass
+        worksheet = spreadsheet.add_worksheet(title="Predictions", rows=1, cols=6)
+        worksheet.update('A1:F1', [['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
 
-    # Data Standardization (Your working logic)
+    # Data Standardization
     team_map_df = dataframes['team_match']
     abbr_to_full = pd.Series(team_map_df['Full Name'].values, index=team_map_df['Abbreviation']).to_dict()
     full_to_abbr = pd.Series(team_map_df['Abbreviation'].values, index=team_map_df['Full Name']).to_dict()
-    possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm', 'Unnamed: 3_level_0_Team']
+    
+    # Add team name normalization to all relevant dataframes
     for name, df in dataframes.items():
-        team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
-        if team_col_found:
-            df['Team_Full'] = df[team_col_found].map(abbr_to_full).fillna(df[team_col_found])
-            df['Team_Abbr'] = df[team_col_found].map(full_to_abbr).fillna(df[team_col_found])
+        if 'Team' in df.columns: # Standardize 'Team' column from various sources
+             df['Team_Full'] = df['Team'].map(abbr_to_full).fillna(df['Team'])
+        elif 'Tm' in df.columns:
+             df['Team_Full'] = df['Tm'].map(abbr_to_full).fillna(df['Tm'])
 
-    # Find the current week's games (Your working logic)
+    # Find the current week's games
     schedule_df = dataframes['Schedule']
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
-    calculation_start_date = datetime(2025, 9, 2)
     today = datetime.now()
-    days_since_start = (today - calculation_start_date).days
-    current_week = (days_since_start // 7) + 1
+    # Simplified week calculation
+    current_week = 1 
+    if not schedule_df.empty:
+        schedule_df['parsed_date'] = pd.to_datetime(schedule_df['Date'] + f", {YEAR}", errors='coerce')
+        future_games = schedule_df[schedule_df['parsed_date'] >= today]
+        if not future_games.empty:
+            current_week = future_games['Week'].min()
+
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week].dropna(subset=['Winner/tie', 'Loser/tie'])
     
     print(f"\nFound {len(this_weeks_games)} games for Week {current_week}. Starting analysis...")
     
+    depth_chart_df = dataframes['Depth_Charts']
+    depth_chart_df['Depth'] = pd.to_numeric(depth_chart_df['Depth'], errors='coerce')
+
     for index, game in this_weeks_games.iterrows():
-        # Matchup logic from your working script
         home_team_full = game['Loser/tie'] if game['Unnamed: 5'] == '@' else game['Winner/tie']
         away_team_full = game['Winner/tie'] if game['Unnamed: 5'] == '@' else game['Loser/tie']
-        home_team_abbr = full_to_abbr.get(home_team_full)
-        away_team_abbr = full_to_abbr.get(away_team_full)
 
         print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
 
-        # Prepare all data for the prompt, which now uses the FILTERED dataframes
-        power_rankings_data = dataframes['Power_Rankings']
-        home_power_rankings = power_rankings_data[power_rankings_data['Team'].str.contains(home_team_full, case=False, na=False)]
-        away_power_rankings = power_rankings_data[power_rankings_data['Team'].str.contains(away_team_full, case=False, na=False)]
+        # --- FRANCO: IDENTIFY KEY QUESTIONABLE PLAYERS FOR THE PROMPT ---
+        key_positions = ['QB', 'RB', 'WR', 'TE']
+        questionable_players_df = depth_chart_df[
+            (depth_chart_df['Status'] == 'Q') &
+            (depth_chart_df['Depth'] == 1) &
+            (depth_chart_df['Position'].isin(key_positions)) &
+            (depth_chart_df['Team_Full'].isin([home_team_full, away_team_full]))
+        ]
         
+        home_q_players = questionable_players_df[questionable_players_df['Team_Full'] == home_team_full]
+        away_q_players = questionable_players_df[questionable_players_df['Team_Full'] == away_team_full]
+        home_q_list = [f"{row['Player']} ({row['Position']})" for i, row in home_q_players.iterrows()]
+        away_q_list = [f"{row['Player']} ({row['Position']})" for i, row in away_q_players.iterrows()]
+        
+        key_questionable_text = f"""
+        ## Key Players with Questionable Status
+        - {home_team_full}: {', '.join(home_q_list) if home_q_list else 'None'}
+        - {away_team_full}: {', '.join(away_q_list) if away_q_list else 'None'}
+        """
+
+        # Prepare all other data for the prompt
+        home_team_abbr = full_to_abbr.get(home_team_full)
+        away_team_abbr = full_to_abbr.get(away_team_full)
         team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
-        # These now pull from the dataframes that have had injured players removed.
-        player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
-        player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
-        player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
-        # We still send the raw injury data so the AI knows who is out.
-        injury_data = dataframes['Injuries'][dataframes['Injuries']['Team'].isin([home_team_full, away_team_full])]
+        player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Tm'].isin([home_team_abbr, away_team_abbr])]
+        player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Tm'].isin([home_team_abbr, away_team_abbr])]
+        player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Tm'].isin([home_team_abbr, away_team_abbr])]
         
-        # Updated prompt - no changes needed here as the data is already clean
+        # --- FRANCO: FINAL, UPDATED PROMPT ---
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
-        Before you make any decisions you MUST:
-        IMPORTANT: Pay close attention to the 'Injuries' data 
-        1. if a player has an Injury Status with any of the key words IR, Injured Reserve, Out, PUP, Physically Unable to Perform, or NFI you MUST assume they will not play. Go to the Depth_Charts and confirm if that injured player has (depth chart 'Depth' = 1)
-        2. Consult the provided Depth Chart to identify their direct backup (depth chart 'Depth' = 2) and you MUST factor the skill level of the 
-        backup player into your prediction.  
+        Use all of the data provided to make the most informed decision.
 
+        {key_questionable_text}
         ---
         ## {home_team_full} (Home) Data
-        - Power Ranking: {home_power_rankings.to_string()}
         - Defense: {team_defense_data[team_defense_data['Team_Full'] == home_team_full].to_string()}
-        - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == home_team_abbr].to_string()}
-        - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == home_team_abbr].to_string()}
-        - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == home_team_abbr].to_string()}
-        - Injuries: {injury_data[injury_data['Team'] == home_team_full].to_string()}
+        - Passing Offense: {player_passing_data[player_passing_data['Tm'] == home_team_abbr].to_string()}
+        - Rushing Offense: {player_rushing_data[player_rushing_data['Tm'] == home_team_abbr].to_string()}
+        - Receiving Offense: {player_receiving_data[player_receiving_data['Tm'] == away_team_abbr].to_string()}
 
         ## {away_team_full} (Away) Data
-        - Power Ranking: {away_power_rankings.to_string()}
         - Defense: {team_defense_data[team_defense_data['Team_Full'] == away_team_full].to_string()}
-        - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == away_team_abbr].to_string()}
-        - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == away_team_abbr].to_string()}
-        - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == away_team_abbr].to_string()}
-        - Injuries: {injury_data[injury_data['Team'] == away_team_full].to_string()}
+        - Passing Offense: {player_passing_data[player_passing_data['Tm'] == away_team_abbr].to_string()}
+        - Rushing Offense: {player_rushing_data[player_rushing_data['Tm'] == away_team_abbr].to_string()}
+        - Receiving Offense: {player_receiving_data[player_receiving_data['Tm'] == away_team_abbr].to_string()}
         ---
 
         Based on the structured data above, provide the following in a clear format:
         1. **Game Prediction:** Predicted Winner and Predicted Final Score.
-        2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
-        3. **Key Player Stat Predictions:** Predict the Passing Yards and Rushing Yards for each QB. Predict Rushing Yards for the lead RB on each team. Predict Receiving Yards for the lead WR on each team. Include your confidence percentage of each player achieving the predictions.
-        4. **Touchdown Scorers:** List 2-3 players (by name and position, e.g., 'RB Name (RB)') who are most likely to score a rushing or receiving touchdown in this game. Do not include QBs for passing touchdowns. Provide a confidence percentage for each touchdown scorer.
-        5. **Justification:** A brief justification for your overall prediction including the most important deciding factors for your prediction. Including any key players that will not play
+        2. **Outcome Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
+        3. **Justification:** A brief justification for your overall prediction. **You MUST specifically mention any "Key Players with Questionable Status" listed above** and describe how their potential absence or limited performance could impact the game's outcome.
+        4. **Key Player Stat Predictions:** Predict stats for the key offensive players expected to play.
+        5. **Touchdown Scorers:** List 2-3 players most likely to score a touchdown.
         """
         
         try:
@@ -248,7 +240,7 @@ def main():
         except Exception as e:
             print(f"Could not generate prediction for this matchup: {e}")
         
-        time.sleep(10)
+        time.sleep(20) # Increased sleep time for API rate limits
 
 if __name__ == "__main__":
     main()

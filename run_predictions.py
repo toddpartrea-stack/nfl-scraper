@@ -206,7 +206,12 @@ def main():
         # Updated prompt - no changes needed here as the data is already clean
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
-        Use all of the data provided to make the most informed decision.
+        Use all of the data provided to make the most informed decision. 
+        IMPORTANT: Pay close attention to the 'Injuries' data 
+        1. if a starting player (depth chart 'Depth' = 1) has an Injury Status with any of the key words IR, 
+        Injured Reserve, Out, PUP, Physically Unable to Perform, or NFI you MUST assume they will not play. 
+        2. Consult the provided Depth Chart to identify their direct backup (depth chart 'Depth' = 2) and you MUST factor the skill level of the 
+        backup player into your prediction.  
 
         ---
         ## {home_team_full} (Home) Data
@@ -231,7 +236,7 @@ def main():
         2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
         3. **Key Player Stat Predictions:** Predict the Passing Yards and Rushing Yards for each QB. Predict Rushing Yards for the lead RB on each team. Predict Receiving Yards for the lead WR on each team. Include your confidence percentage of each player achieving the predictions.
         4. **Touchdown Scorers:** List 2-3 players (by name and position, e.g., 'RB Name (RB)') who are most likely to score a rushing or receiving touchdown in this game. Do not include QBs for passing touchdowns. Provide a confidence percentage for each touchdown scorer.
-        5. **Justification:** A brief justification for your overall prediction including the most important deciding factors for your prediction.
+        5. **Justification:** A brief justification for your overall prediction including the most important deciding factors for your prediction. Including any key players that will not play
         """
         
         try:

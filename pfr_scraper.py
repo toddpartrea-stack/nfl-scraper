@@ -1,6 +1,7 @@
 import requests
 import pandas as pd
 import gspread
+from bs4 import BeautifulSoup
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -8,14 +9,13 @@ import os
 import pickle
 import io
 from datetime import datetime
-from bs4 import BeautifulSoup
 
 # --- CONFIGURATION ---
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
 YEAR = 2025
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- Google Sheets Authentication (Your working version) ---
+# --- Google Sheets Authentication ---
 def get_gspread_client():
     creds = None
     if os.path.exists('token.pickle'):
@@ -31,7 +31,7 @@ def get_gspread_client():
             pickle.dump(creds, token)
     return gspread.authorize(creds)
 
-# --- Helper Function to Write to a Sheet Tab (Your working version) ---
+# --- Helper Function to Write to a Sheet Tab ---
 def write_to_sheet(spreadsheet, sheet_name, dataframe):
     print(f"  -> Writing data to '{sheet_name}' tab...")
     if dataframe.empty:
@@ -49,7 +49,7 @@ def write_to_sheet(spreadsheet, sheet_name, dataframe):
     worksheet.update(data_to_upload, value_input_option='USER_ENTERED')
     print(f"  -> Successfully wrote {len(dataframe)} rows.")
     
-# --- Advanced Data Cleaning Helper (Your working version) ---
+# --- Advanced Data Cleaning Helper ---
 def clean_pfr_table(df):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = ['_'.join(col).strip() for col in df.columns.values]
@@ -62,27 +62,29 @@ def clean_pfr_table(df):
 if __name__ == "__main__":
     print("Authenticating with Google Sheets...")
     gc = get_gspread_client()
-    try:
-        spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
-    except Exception as e:
-        print(f"❌ An error occurred opening the sheet: {e}")
-        exit()
+    spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
 
-    # --- (Your working TeamRankings scraping logic) ---
+    # --- Your working TeamRankings scraping logic ---
     print("\n--- Scraping TeamRankings.com Power Rankings ---")
     try:
         url = "https://www.teamrankings.com/nfl/rankings/teams/"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'
-        }
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh...)'}
         all_tables = pd.read_html(url, header=0)
         rankings_df = all_tables[0]
         write_to_sheet(spreadsheet, "Power_Rankings", rankings_df)
     except Exception as e:
         print(f"❌ Could not process TeamRankings Stats: {e}")
     
-    # --- DEFENSE (Your working version) ---
-    print("\n--- Scraping DEFENSE ---")
+    # --- DYNAMIC INJURY WEEK CALCULATION ---
+    season_start_date = datetime(YEAR, 9, 4)
+    today = datetime.now()
+    days_since_start = (today - season_start_date).days
+    current_week = (days_since_start // 7) + 1
+    injury_table_title = f"Week {current_week} Injuries"
+    print(f"\nCalculated current NFL week: {current_week}. Looking for table: '{injury_table_title}'")
+    
+    # --- Your working PFR scraping logic ---
+    print("\n--- Scraping PFR DEFENSE ---")
     try:
         url = f"https://www.pro-football-reference.com/years/{YEAR}/opp.htm"
         all_tables = pd.read_html(url)
@@ -91,19 +93,16 @@ if __name__ == "__main__":
         if len(all_tables) > 3: write_to_sheet(spreadsheet, "D_Rushing", clean_pfr_table(all_tables[3]))
     except Exception as e: print(f"❌ Could not process Defensive Stats: {e}")
 
-    # --- OFFENSE (TEAM) (Your working version) ---
-    print("\n--- Scraping TEAM OFFENSE ---")
+    print("\n--- Scraping PFR TEAM OFFENSE ---")
     try:
         url = f"https://www.pro-football-reference.com/years/{YEAR}/"
-        try:
-            team_offense_df = pd.read_html(url, match="Team Offense")[0]
-            write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
-        except ValueError:
-            print("  -> Team Offense table not found (likely not posted for the new season yet).")
+        team_offense_df = pd.read_html(url, match="Team Offense")[0]
+        write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
+    except ValueError:
+        print("  -> Team Offense table not found.")
     except Exception as e: print(f"❌ Could not process Team Offensive Stats: {e}")
     
-    # --- OFFENSE (PLAYER) (Your working version) ---
-    print("\n--- Scraping PLAYER OFFENSE ---")
+    print("\n--- Scraping PFR PLAYER OFFENSE ---")
     try:
         passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]
         rushing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/rushing.htm")[0]
@@ -117,14 +116,11 @@ if __name__ == "__main__":
     print("\n--- Scraping CBS Sports INJURIES ---")
     try:
         url = "https://www.cbssports.com/nfl/injuries/"
-        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh...)'} # Abridged for clarity
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh...)'}
         response = requests.get(url, headers=headers)
-        response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
-
         team_headers = soup.find_all('h4', class_='TableBase-title')
         all_injuries = []
-
         for header in team_headers:
             team_name_tag = header.find('span', class_='TeamName')
             if team_name_tag:
@@ -133,29 +129,17 @@ if __name__ == "__main__":
                 if table_container:
                     table = table_container.find('table')
                     if table:
-                        table_headers = [th.text for th in table.find('thead').find_all('th')]
-                        table_rows = []
-                        for tr in table.find('tbody').find_all('tr'):
-                            cells = [td.text.strip() for td in tr.find_all('td')]
-                            # Logic from your working ir_test.py to find the correct player name
-                            long_name_span = tr.find('span', class_='CellPlayerName--long')
-                            if long_name_span:
-                                cells[0] = long_name_span.text.strip()
-                            table_rows.append(cells)
-
-                        df = pd.DataFrame(table_rows, columns=table_headers)
+                        df = pd.read_html(io.StringIO(str(table)))[0]
                         df['Team'] = team_name
+                        df['Player'] = df['Player'].apply(lambda x: ' '.join(x.split()[1:]) if isinstance(x, str) else x)
                         all_injuries.append(df)
-
         if all_injuries:
             final_df = pd.concat(all_injuries, ignore_index=True)
             write_to_sheet(spreadsheet, "Injuries", final_df)
-        else:
-            print("  -> Could not find any injury tables on the page.")
-    except Exception as e:
+    except Exception as e: 
         print(f"❌ Could not process Injury Reports: {e}")
 
-     # --- NEW: Scrape FootballGuys.com Depth Charts ---
+    # --- NEW: Scrape FootballGuys.com Depth Charts ---
     print("\n--- Scraping FootballGuys.com Depth Charts ---")
     try:
         url = "https://www.footballguys.com/depth-charts"
@@ -183,12 +167,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Could not process Depth Charts: {e}")
 
-    # --- SCHEDULE (Your working version) ---
-    print("\n--- Scraping SCHEDULE ---")
-    try:
-        url = f"https://www.pro-football-reference.com/years/{YEAR}/games.htm"
-        schedule_df = pd.read_html(url)[0]
-        write_to_sheet(spreadsheet, "Schedule", clean_pfr_table(schedule_df))
-    except Exception as e: print(f"❌ Could not process Schedule: {e}")
-
-    print("\n✅ Project script finished.")
+    print("\n✅ Scraper script finished.")

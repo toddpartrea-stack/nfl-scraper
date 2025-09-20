@@ -30,7 +30,7 @@ jobs:
         run: python pfr_scraper.py
 
       # --- NEW STEP ---
-      - name: Run Prediction Script
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python run_predictions.py
+      #- name: Run Prediction Script
+        #env:
+          #GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        #run: python run_predictions.py

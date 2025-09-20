@@ -8,6 +8,7 @@ import os
 import pickle
 import io
 from datetime import datetime
+from bs4 import BeautifulSoup
 
 # --- CONFIGURATION ---
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
@@ -67,7 +68,7 @@ if __name__ == "__main__":
         print(f"❌ An error occurred opening the sheet: {e}")
         exit()
 
-    # --- NEW: Scrape TeamRankings.com Power Rankings ---
+    # --- (Your working TeamRankings scraping logic) ---
     print("\n--- Scraping TeamRankings.com Power Rankings ---")
     try:
         url = "https://www.teamrankings.com/nfl/rankings/teams/"
@@ -79,14 +80,6 @@ if __name__ == "__main__":
         write_to_sheet(spreadsheet, "Power_Rankings", rankings_df)
     except Exception as e:
         print(f"❌ Could not process TeamRankings Stats: {e}")
-
-    # --- DYNAMIC INJURY WEEK CALCULATION (Your working version) ---
-    season_start_date = datetime(YEAR, 9, 4)
-    today = datetime.now()
-    days_since_start = (today - season_start_date).days
-    current_week = (days_since_start // 7) + 1
-    injury_table_title = f"Week {current_week} Injuries"
-    print(f"\nCalculated current NFL week: {current_week}. Looking for table: '{injury_table_title}'")
     
     # --- DEFENSE (Your working version) ---
     print("\n--- Scraping DEFENSE ---")
@@ -120,11 +113,11 @@ if __name__ == "__main__":
         write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
     except Exception as e: print(f"❌ Could not process Player Offensive Stats: {e}")
 
-     # --- DEFINITIVE CBS Sports Injury Scrape ---
+    # --- NEW: Scrape CBS Sports Injury Report ---
     print("\n--- Scraping CBS Sports INJURIES ---")
     try:
         url = "https://www.cbssports.com/nfl/injuries/"
-        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh...)'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh...)'} # Abridged for clarity
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
@@ -161,7 +154,6 @@ if __name__ == "__main__":
             print("  -> Could not find any injury tables on the page.")
     except Exception as e:
         print(f"❌ Could not process Injury Reports: {e}")
-
 
     # --- SCHEDULE (Your working version) ---
     print("\n--- Scraping SCHEDULE ---")

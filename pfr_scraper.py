@@ -1,6 +1,7 @@
 import requests
 import pandas as pd
 import gspread
+from bs4 import BeautifulSoup
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -8,7 +9,6 @@ import os
 import pickle
 import io
 from datetime import datetime
-from bs4 import BeautifulSoup
 
 # --- CONFIGURATION ---
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
@@ -62,29 +62,57 @@ def clean_pfr_table(df):
 if __name__ == "__main__":
     print("Authenticating with Google Sheets...")
     gc = get_gspread_client()
-    try:
-        spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
-    except Exception as e:
-        print(f"❌ An error occurred opening the sheet: {e}")
-        exit()
+    spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
 
-    # --- (Your PFR scraping logic for Defense, Offense, Players, etc.) ---
+    # --- (Your working PFR and TeamRankings scraping logic) ---
     # ...
-    
+
+    # --- NEW: Scrape FootballGuys.com Depth Charts ---
+    print("\n--- Scraping FootballGuys.com Depth Charts ---")
+    try:
+        url = "https://www.footballguys.com/depth-charts"
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'}
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        team_containers = soup.find_all('div', class_='depth-chart')
+        all_players = []
+        for container in team_containers:
+            team_name_tag = container.find('span', class_='team-header')
+            if team_name_tag:
+                team_name = team_name_tag.text.strip()
+                position_items = container.find_all('li')
+                for item in position_items:
+                    pos_label_tag = item.find('span', class_='pos-label')
+                    if pos_label_tag:
+                        position = pos_label_tag.text.replace(':', '').strip()
+                        player_tags = item.find_all(['a', 'span'], class_='player')
+                        for i, player_tag in enumerate(player_tags):
+                            player_name = player_tag.text.strip()
+                            all_players.append({
+                                'Team': team_name, 'Position': position,
+                                'Depth': i + 1, 'Player': player_name
+                            })
+        if all_players:
+            depth_chart_df = pd.DataFrame(all_players)
+            write_to_sheet(spreadsheet, "Depth_Charts", depth_chart_df)
+        else:
+            print("  -> Could not find any depth chart containers.")
+    except Exception as e:
+        print(f"❌ Could not process Depth Charts: {e}")
+        
     # --- NEW: Scrape CBS Sports Injury Report ---
     print("\n--- Scraping CBS Sports INJURIES ---")
     try:
         url = "https://www.cbssports.com/nfl/injuries/"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'
-        }
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'}
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
         
         team_headers = soup.find_all('h4', class_='TableBase-title')
         all_injuries = []
-        
         for header in team_headers:
             team_name_tag = header.find('span', class_='TeamName')
             if team_name_tag:
@@ -104,7 +132,6 @@ if __name__ == "__main__":
                         df = pd.DataFrame(table_rows, columns=table_headers)
                         df['Team'] = team_name
                         all_injuries.append(df)
-
         if all_injuries:
             final_df = pd.concat(all_injuries, ignore_index=True)
             write_to_sheet(spreadsheet, "Injuries", final_df)
@@ -113,13 +140,4 @@ if __name__ == "__main__":
     except Exception as e: 
         print(f"❌ Could not process Injury Reports: {e}")
 
-    # --- SCHEDULE (Your working version) ---
-    print("\n--- Scraping SCHEDULE ---")
-    try:
-        url = f"https://www.pro-football-reference.com/years/{YEAR}/games.htm"
-        schedule_df = pd.read_html(url)[0]
-        write_to_sheet(spreadsheet, "Schedule", clean_pfr_table(schedule_df))
-    except Exception as e: 
-        print(f"❌ Could not process Schedule: {e}")
-
-    print("\n✅ Project script finished.")
+    print("\n✅ Scraper script finished.")

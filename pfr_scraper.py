@@ -37,32 +37,36 @@ def write_to_sheet(spreadsheet, sheet_name, dataframe):
     if dataframe.empty:
         print(f"  -> Data is empty for {sheet_name}.")
         return
-        
+
     try:
         worksheet = spreadsheet.worksheet(sheet_name)
         worksheet.clear()
     except gspread.WorksheetNotFound:
         worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1, cols=len(dataframe.columns))
-    
+
     dataframe = dataframe.astype(str).fillna('')
     data_to_upload = [dataframe.columns.values.tolist()] + dataframe.values.tolist()
     worksheet.update(data_to_upload, value_input_option='USER_ENTERED')
     print(f"  -> Successfully wrote {len(dataframe)} rows.")
-    
+
 # --- Helper Function to Clean PFR Schedule ---
 def clean_pfr_schedule(df):
     games = []
+    # Iterate through the raw data two rows at a time
     for i in range(0, len(df), 2):
         row1 = df.iloc[i]
         row2 = df.iloc[i+1]
+
         if pd.isna(row1['Winner/tie']) or pd.isna(row2['Winner/tie']):
             continue
+
         if row1['Unnamed: 5'] == '@':
             home_team = row2['Winner/tie']
             away_team = row1['Winner/tie']
         else:
             home_team = row1['Winner/tie']
             away_team = row2['Winner/tie']
+
         games.append({
             'Week': row1['Week'], 'Day': row1['Day'], 'Date': row1['Date'],
             'Time': row1['Time'], 'Away_Team': away_team, 'Home_Team': home_team
@@ -79,7 +83,7 @@ if __name__ == "__main__":
     print("\n--- Scraping TeamRankings.com Power Rankings ---")
     try:
         url = "https://www.teamrankings.com/nfl/rankings/teams/"
-        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh...)'} # Abridged for clarity
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh...)'}
         all_tables = pd.read_html(url, header=0)
         rankings_df = all_tables[0]
         write_to_sheet(spreadsheet, "Power_Rankings", rankings_df)
@@ -90,7 +94,7 @@ if __name__ == "__main__":
     print("\n--- Scraping CBS Sports INJURIES ---")
     try:
         url = "https://www.cbssports.com/nfl/injuries/"
-        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh...)'} # Abridged for clarity
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh...)'}
         response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.content, 'html.parser')
         team_headers = soup.find_all('h4', class_='TableBase-title')
@@ -110,14 +114,14 @@ if __name__ == "__main__":
         if all_injuries:
             final_df = pd.concat(all_injuries, ignore_index=True)
             write_to_sheet(spreadsheet, "Injuries", final_df)
-    except Exception as e: 
+    except Exception as e:
         print(f"❌ Could not process Injury Reports: {e}")
 
     # 3. Scrape FootballGuys.com Depth Charts
     print("\n--- Scraping FootballGuys.com Depth Charts ---")
     try:
         url = "https://www.footballguys.com/depth-charts"
-        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh...)'} # Abridged for clarity
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh...)'}
         response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.content, 'html.parser')
         team_containers = soup.find_all('div', class_='depth-chart')
@@ -148,7 +152,7 @@ if __name__ == "__main__":
         schedule_df_raw = pd.read_html(url)[0]
         schedule_df_clean = clean_pfr_schedule(schedule_df_raw)
         write_to_sheet(spreadsheet, "Schedule", schedule_df_clean)
-    except Exception as e: 
+    except Exception as e:
         print(f"❌ Could not process Schedule: {e}")
 
     print("\n✅ Scraper script finished.")

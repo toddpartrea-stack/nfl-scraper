@@ -145,7 +145,9 @@ def main():
         # Updated prompt with Power Rankings
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
-        Use all of the data provided to make the most informed decision.
+        Use all of the data provided to make the most informed decision. IMPORTANT if you see a player with injuries and a status of out, injured reserve, or IR
+        do not use them in your prediction.  Instead use the backup player for that team and position defined in the depth chart data.  
+        Be sure to take the backup player ONLY into account for your prediction.
 
         ---
         ## {home_team_full} (Home) Data
@@ -167,10 +169,10 @@ def main():
 
         Based on the structured data above, provide the following in a clear format:
         1. **Game Prediction:** Predicted Winner and Predicted Final Score.
-        2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
+        2. **Outcome Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
         3. **Key Player Stat Predictions:** Predict the Passing Yards and Rushing Yards for each QB. Predict Rushing Yards for the lead RB on each team. Predict Receiving Yards for the lead WR on each team. Include your confidence percentage of each player achieving the predictions.
         4. **Touchdown Scorers:** List 2-3 players (by name and position, e.g., 'RB Name (RB)') who are most likely to score a rushing or receiving touchdown in this game. Do not include QBs for passing touchdowns. Provide a confidence percentage for each touchdown scorer.
-        5. **Justification:** A brief justification for your overall prediction including the most important deciding factors for your prediction.
+        5. **Justification:** A brief justification for your overall prediction including the most important deciding factors for your prediction. If there are any key players out due to injury be sure to include that
         """
         
         try:

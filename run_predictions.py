@@ -14,7 +14,7 @@ SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- (Authentication and helper functions are unchanged) ---
+# --- Google Sheets Authentication (Your working version) ---
 def get_gspread_client():
     creds = None
     if os.path.exists('token.pickle'):
@@ -28,6 +28,7 @@ def get_gspread_client():
             return None
     return gspread.authorize(creds)
 
+# --- Function to write predictions to the sheet (Your working version) ---
 def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, prediction_text):
     try:
         sheet_name = "Predictions"
@@ -47,15 +48,6 @@ def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, predictio
         print(f"  -> ✅ Prediction for {away_team} @ {home_team} written to sheet.")
     except Exception as e:
         print(f"  -> ❌ Error writing prediction to sheet: {e}")
-
-# --- NEW: Function to standardize player names ---
-def standardize_player_name(name):
-    if isinstance(name, str):
-        if ',' in name:
-            parts = name.split(',')
-            return f"{parts[1].strip()} {parts[0].strip()}"
-        return name.split('(')[0].strip()
-    return name
 
 # --- Main execution block ---
 def main():
@@ -93,16 +85,8 @@ def main():
         print(f"❌ Error configuring Gemini API: {e}")
         return
 
-    # Standardize Player Names across all relevant dataframes
-    print("\nStandardizing player names...")
-    for name, df in dataframes.items():
-        player_col = next((col for col in ['Player', 'Player Name', 'Player_Info'] if col in df.columns), None)
-        if player_col:
-            df[player_col] = df[player_col].apply(standardize_player_name)
-            print(f"  -> Standardized names for tab: {name}")
-
-    # Check for required tabs
-    required_tabs = ['Schedule', 'D_Overall', 'Injuries', 'team_match', 'Power_Rankings', 'Depth_Charts']
+    # Check for required tabs, now including Power_Rankings
+    required_tabs = ['Schedule', 'D_Overall', 'O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving', 'Injuries', 'team_match', 'Power_Rankings']
     if not all(tab in dataframes for tab in required_tabs):
         print(f"\n❌ Could not find all necessary data tabs. Found: {list(dataframes.keys())}")
         return
@@ -116,91 +100,77 @@ def main():
     except gspread.WorksheetNotFound:
         pass
 
-    # Data Standardization
+    # Data Standardization (Your working logic)
     team_map_df = dataframes['team_match']
     abbr_to_full = pd.Series(team_map_df['Full Name'].values, index=team_map_df['Abbreviation']).to_dict()
     full_to_abbr = pd.Series(team_map_df['Abbreviation'].values, index=team_map_df['Full Name']).to_dict()
+    possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm', 'Unnamed: 3_level_0_Team']
     for name, df in dataframes.items():
-        team_col_found = next((col for col in df.columns if 'Tm' in col or 'Team' in col or 'Winner/tie' in col or 'Loser/tie' in col), None)
+        team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
         if team_col_found:
             df['Team_Full'] = df[team_col_found].map(abbr_to_full).fillna(df[team_col_found])
             df['Team_Abbr'] = df[team_col_found].map(full_to_abbr).fillna(df[team_col_found])
 
-    # Find the current week's games
+    # Find the current week's games (Your working logic)
     schedule_df = dataframes['Schedule']
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
     calculation_start_date = datetime(2025, 9, 2)
     today = datetime.now()
     days_since_start = (today - calculation_start_date).days
     current_week = (days_since_start // 7) + 1
-    this_weeks_games_raw = schedule_df[schedule_df['Week'] == current_week]
+    this_weeks_games = schedule_df[schedule_df['Week'] == current_week].dropna(subset=['Winner/tie', 'Loser/tie'])
     
-    print(f"\nFound {len(this_weeks_games_raw) // 2} games for Week {current_week}. Starting analysis...")
+    print(f"\nFound {len(this_weeks_games)} games for Week {current_week}. Starting analysis...")
     
-    # Process games in pairs
-    for i in range(0, len(this_weeks_games_raw), 2):
-        row1 = this_weeks_games_raw.iloc[i]
-        row2 = this_weeks_games_raw.iloc[i+1]
-        if pd.isna(row1['Winner/tie']) or pd.isna(row2['Winner/tie']):
-            continue
-
-        if row1['Unnamed: 5'] == '@':
-            home_team_full = row2['Winner/tie']
-            away_team_full = row1['Winner/tie']
-        else:
-            home_team_full = row1['Winner/tie']
-            away_team_full = row2['Winner/tie']
-            
+    for index, game in this_weeks_games.iterrows():
+        # Matchup logic from your working script
+        home_team_full = game['Loser/tie'] if game['Unnamed: 5'] == '@' else game['Winner/tie']
+        away_team_full = game['Winner/tie'] if game['Unnamed: 5'] == '@' else game['Loser/tie']
         home_team_abbr = full_to_abbr.get(home_team_full)
         away_team_abbr = full_to_abbr.get(away_team_full)
 
         print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
 
-        # Prepare all data for the prompt
+        # Prepare all data for the prompt, now including Power Rankings
         power_rankings_data = dataframes['Power_Rankings']
         home_power_rankings = power_rankings_data[power_rankings_data['Team'].str.contains(home_team_full, case=False, na=False)]
         away_power_rankings = power_rankings_data[power_rankings_data['Team'].str.contains(away_team_full, case=False, na=False)]
         
-        injury_data = dataframes['Injuries']
-        home_injury_data = injury_data[injury_data['Team_Full'] == home_team_full]
-        away_injury_data = injury_data[injury_data['Team_Full'] == away_team_full]
+        team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
+        player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
+        player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
+        player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
+        injury_data = dataframes['Injuries'][dataframes['Injuries']['Team_Full'].isin([home_team_full, away_team_full])]
         
-        depth_chart_data = dataframes['Depth_Charts']
-        home_depth_chart = depth_chart_data[depth_chart_data['Team'] == home_team_abbr]
-        away_depth_chart = depth_chart_data[depth_chart_data['Team'] == away_team_abbr]
-        
-        # --- The Final, Most Advanced Prompt ---
+        # Updated prompt with Power Rankings
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
-        
-        You MUST follow these steps in your analysis:
-        1. Review the 'Injuries' data for each team.
-        2. If a key player is listed with a status of 'IR', 'Out', or 'Doubtful', find that player in the 'Depth Chart' data.
-        3. Identify the player listed directly below them in the depth chart as their replacement.
-        4. Factor the absence of the starter and the presence of the backup into your final predictions for player stats and the overall game outcome.
-        5. In your 'Justification', you MUST mention the specific impact of key injuries.
+        Use all of the data provided to make the most informed decision.
 
         ---
         ## {home_team_full} (Home) Data
         - Power Ranking: {home_power_rankings.to_string()}
-        - Injuries: {home_injury_data.to_string()}
-        - Depth Chart: {home_depth_chart.to_string()}
-        - (Other PFR data can be added here)
+        - Defense: {team_defense_data[team_defense_data['Team_Full'] == home_team_full].to_string()}
+        - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == home_team_abbr].to_string()}
+        - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == home_team_abbr].to_string()}
+        - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == home_team_abbr].to_string()}
+        - Injuries: {injury_data[injury_data['Team_Full'] == home_team_full].to_string()}
 
         ## {away_team_full} (Away) Data
         - Power Ranking: {away_power_rankings.to_string()}
-        - Injuries: {away_injury_data.to_string()}
-        - Depth Chart: {away_depth_chart.to_string()}
-        - (Other PFR data can be added here)
+        - Defense: {team_defense_data[team_defense_data['Team_Full'] == away_team_full].to_string()}
+        - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == away_team_abbr].to_string()}
+        - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == away_team_abbr].to_string()}
+        - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == away_team_abbr].to_string()}
+        - Injuries: {injury_data[injury_data['Team_Full'] == away_team_full].to_string()}
         ---
 
-        Based on your analysis of all the structured data above, provide the following:
+        Based on the structured data above, provide the following in a clear format:
         1. **Game Prediction:** Predicted Winner and Predicted Final Score.
-        2. **Outcome Confidence Percentage: [Provide a confidence percentage from 1% to 100% for the predicted winner.
-        3. **Key Injuries** List any key starting players that are on the injured list and not playing.  Key positions are QB, WR, RB, TE
-        4. **Key Player Stat Predictions:** Predict the Passing Yards and Rushing Yards for each QB. Predict Rushing Yards for the lead RB on each team. Predict Receiving Yards for the lead WR on each team. Include your confidence percentage of each player acheiving the predictions
-        5. **Touchdown Scorers:** List 2-3 players (by name and position, e.g., 'RB Name (RB)') who are most likely to score a rushing or receiving touchdown in this game. Do not include QBs for passing touchdowns. Provide a confidence percentage from 1% to 100% for each touchdown scorer.
-        6. **Justification:** A brief justification for your overall prediction including the most important deciding factors for your prediction.
+        2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
+        3. **Key Player Stat Predictions:** Predict the Passing Yards and Rushing Yards for each QB. Predict Rushing Yards for the lead RB on each team. Predict Receiving Yards for the lead WR on each team. Include your confidence percentage of each player achieving the predictions.
+        4. **Touchdown Scorers:** List 2-3 players (by name and position, e.g., 'RB Name (RB)') who are most likely to score a rushing or receiving touchdown in this game. Do not include QBs for passing touchdowns. Provide a confidence percentage for each touchdown scorer.
+        5. **Justification:** A brief justification for your overall prediction including the most important deciding factors for your prediction.
         """
         
         try:

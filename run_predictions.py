@@ -44,7 +44,7 @@ def write_prediction_to_sheet(spreadsheet, week, away_team, home_team, predictio
     except Exception as e:
         print(f"  -> ❌ Error writing prediction to sheet: {e}")
 
-# --- Normalization and Status Functions ---
+# --- Helper Functions ---
 def normalize_player_name(name):
     if not isinstance(name, str): return ""
     name = name.lower()
@@ -52,12 +52,44 @@ def normalize_player_name(name):
     name = re.sub(r'[.\'"+*]', '', name)
     return name.strip()
 
-def get_player_statuses_from_depth_chart(depth_chart_df):
+def get_out_players_set(depth_chart_df):
     out_statuses = ['O', 'IR', 'PUP', 'NFI', 'IR-R']
     out_players_df = depth_chart_df[depth_chart_df['Status'].isin(out_statuses)]
     out_players_set = {normalize_player_name(name) for name in out_players_df['Player']}
     print(f"Found {len(out_players_set)} players who are OUT from the depth chart.")
     return out_players_set
+
+# --- FRANCO: NEW "GAME-DAY ROSTER" LOGIC ---
+def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out_players_set, pos_config):
+    """
+    Builds a clean roster of healthy players for a specific team based on the depth chart.
+    """
+    team_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == team_full_name].copy()
+    
+    # Normalize player names in both dataframes for reliable matching
+    team_depth_chart['Player_Normalized'] = team_depth_chart['Player'].apply(normalize_player_name)
+    stats_df['Player_Normalized'] = stats_df['Player'].apply(normalize_player_name)
+    
+    active_roster_players = []
+    
+    for pos, num_players in pos_config.items():
+        pos_depth = team_depth_chart[team_depth_chart['Position'] == pos].sort_values(by='Depth')
+        healthy_players_found = 0
+        for _, player_row in pos_depth.iterrows():
+            if healthy_players_found >= num_players:
+                break
+            
+            player_name_normalized = player_row['Player_Normalized']
+            
+            if player_name_normalized not in out_players_set:
+                active_roster_players.append(player_name_normalized)
+                healthy_players_found += 1
+    
+    # Filter the original stats DataFrame to include only the active roster players
+    final_roster_df = stats_df[stats_df['Player_Normalized'].isin(active_roster_players)]
+    
+    return final_roster_df.drop(columns=['Player_Normalized'])
+
 
 # --- Main execution block ---
 def main():
@@ -74,32 +106,19 @@ def main():
     # Load All Data
     dataframes = {}
     print("\nLoading data from Google Sheet tabs...")
-    try:
-        for worksheet in spreadsheet.worksheets():
-            title = worksheet.title
-            data = worksheet.get_all_values()
-            if data:
-                dataframes[title] = pd.DataFrame(data[1:], columns=data[0])
-                print(f"  -> Loaded tab: {title}")
-    except Exception as e:
-        print(f"❌ Error loading sheet: {e}")
-        return
-        
-    # Check for required tabs
-    required_tabs = ['Schedule', 'D_Overall', 'O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving', 'Depth_Charts', 'team_match']
-    if not all(tab in dataframes for tab in required_tabs):
-        print(f"\n❌ Could not find all necessary data tabs. Found: {list(dataframes.keys())}")
-        return
+    for worksheet in spreadsheet.worksheets():
+        title = worksheet.title
+        data = worksheet.get_all_values()
+        if data:
+            dataframes[title] = pd.DataFrame(data[1:], columns=data[0])
+            print(f"  -> Loaded tab: {title}")
         
     # Build Master Maps from your Rosetta Stone
     print("\nBuilding team name master map from 'team_match' sheet...")
     team_map_df = dataframes['team_match']
-    master_team_map = {}
-    full_name_to_abbr = {}
+    master_team_map, full_name_to_abbr = {}, {}
     for _, row in team_map_df.iterrows():
-        full_name = row['Full Name']
-        abbr = row['Abbreviation']
-        injury_team_name = row['Injury team']
+        full_name, abbr, injury_team_name = row['Full Name'], row['Abbreviation'], row['Injury team']
         if full_name: master_team_map[full_name] = full_name
         if abbr: master_team_map[abbr] = full_name
         if injury_team_name: master_team_map[injury_team_name] = full_name
@@ -107,7 +126,6 @@ def main():
     
     # Standardize All DataFrames using the Master Map
     print("\nStandardizing team names across all data sheets...")
-    # FRANCO: Added the new column name to this list
     possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm', 'Unnamed: 3_level_0_Team']
     for name, df in dataframes.items():
         team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
@@ -117,19 +135,11 @@ def main():
             df['Team_Abbr'] = df['Team_Full'].map(full_name_to_abbr)
             print(f"  -> Standardized team names for '{name}' sheet.")
 
-    # Get player statuses and filter "out" players
-    print("\nFiltering players based on Depth Chart status...")
-    out_players_normalized = get_player_statuses_from_depth_chart(dataframes['Depth_Charts'])
-    for stat_sheet_name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']:
-        df = dataframes[stat_sheet_name]
-        if 'Player' in df.columns:
-            normalized_stats_names = df['Player'].apply(normalize_player_name)
-            is_out_mask = normalized_stats_names.isin(out_players_normalized)
-            removed_players = df[is_out_mask]['Player'].tolist()
-            dataframes[stat_sheet_name] = df[~is_out_mask]
-            if removed_players:
-                print(f"  -> From {stat_sheet_name}, removed {len(removed_players)} players: {removed_players}")
-
+    # Get the master list of all players who are out
+    depth_chart_df = dataframes['Depth_Charts']
+    depth_chart_df['Depth'] = pd.to_numeric(depth_chart_df['Depth'], errors='coerce')
+    out_players_set = get_out_players_set(depth_chart_df)
+    
     # Clear old predictions
     try:
         predictions_sheet = spreadsheet.worksheet("Predictions")
@@ -148,78 +158,60 @@ def main():
     # Find the current week's games
     schedule_df = dataframes['Schedule']
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
-    # For testing, we are hardcoding the week. To make it dynamic, use the code below.
     current_week = 3
-    # DYNAMIC WEEK CALCULATION (use this when you're ready)
-    # today = datetime.now()
-    # future_games = schedule_df[pd.to_datetime(schedule_df['Date'] + f", {YEAR}", errors='coerce') >= today]
-    # current_week = future_games['Week'].min() if not future_games.empty else schedule_df['Week'].max()
-
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week].dropna(subset=['Winner/tie', 'Loser/tie'])
     
     print(f"\nFound {len(this_weeks_games)} games for Week {current_week}. Starting analysis...")
-    
-    depth_chart_df = dataframes['Depth_Charts']
-    depth_chart_df['Depth'] = pd.to_numeric(depth_chart_df['Depth'], errors='coerce')
 
     for index, game in this_weeks_games.iterrows():
-        # FRANCO: Fixed the logic to correctly identify home and away teams
         home_team_full = game['Loser/tie'] if game['Unnamed: 5'] == '@' else game['Winner/tie']
         away_team_full = game['Winner/tie'] if game['Unnamed: 5'] == '@' else game['Loser/tie']
-
-        print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
-
-        # Identify key questionable players for the prompt
-        key_positions = ['QB', 'RB', 'WR', 'TE']
-        questionable_players_df = depth_chart_df[
-            (depth_chart_df['Status'] == 'Q') &
-            (depth_chart_df['Depth'] == 1) &
-            (depth_chart_df['Position'].isin(key_positions)) &
-            (depth_chart_df['Team_Full'].isin([home_team_full, away_team_full]))
-        ]
-        home_q_list = [f"{row['Player']} ({row['Position']})" for i, row in questionable_players_df[questionable_players_df['Team_Full'] == home_team_full].iterrows()]
-        away_q_list = [f"{row['Player']} ({row['Position']})" for i, row in questionable_players_df[questionable_players_df['Team_Full'] == away_team_full].iterrows()]
-        
-        key_questionable_text = f"""
-        ## Key Players with Questionable Status
-        - {home_team_full}: {', '.join(home_q_list) if home_q_list else 'None'}
-        - {away_team_full}: {', '.join(away_q_list) if away_q_list else 'None'}
-        """
-
-        # Prepare all other data for the prompt
         home_team_abbr = full_name_to_abbr.get(home_team_full)
         away_team_abbr = full_name_to_abbr.get(away_team_full)
+
+        print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
         
+        # --- FRANCO: Build the clean Game-Day Rosters ---
+        pos_config_passing = {'QB': 1}
+        pos_config_rushing = {'RB': 2, 'QB': 1}
+        pos_config_receiving = {'WR': 3, 'TE': 1}
+
+        home_passing_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, dataframes['O_Player_Passing'], out_players_set, pos_config_passing)
+        away_passing_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, dataframes['O_Player_Passing'], out_players_set, pos_config_passing)
+        
+        home_rushing_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, dataframes['O_Player_Rushing'], out_players_set, pos_config_rushing)
+        away_rushing_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, dataframes['O_Player_Rushing'], out_players_set, pos_config_rushing)
+
+        home_receiving_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, dataframes['O_Player_Receiving'], out_players_set, pos_config_receiving)
+        away_receiving_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, dataframes['O_Player_Receiving'], out_players_set, pos_config_receiving)
+
         team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
-        player_passing_data = dataframes['O_Player_Passing'][dataframes['O_Player_Passing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
-        player_rushing_data = dataframes['O_Player_Rushing'][dataframes['O_Player_Rushing']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
-        player_receiving_data = dataframes['O_Player_Receiving'][dataframes['O_Player_Receiving']['Team_Abbr'].isin([home_team_abbr, away_team_abbr])]
         
+        # --- FRANCO: FINAL PROMPT WITH UPDATED INSTRUCTIONS ---
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
-        Use all of the data provided to make the most informed decision.
+        Analyze the provided data, which has been filtered to show only the key players expected to be active for this game.
 
-        {key_questionable_text}
         ---
         ## {home_team_full} (Home) Data
         - Defense: {team_defense_data[team_defense_data['Team_Full'] == home_team_full].to_string()}
-        - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == home_team_abbr].to_string()}
-        - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == home_team_abbr].to_string()}
-        - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == home_team_abbr].to_string()}
+        - Passing Offense (Active Players): {home_passing_roster.to_string()}
+        - Rushing Offense (Active Players): {home_rushing_roster.to_string()}
+        - Receiving Offense (Active Players): {home_receiving_roster.to_string()}
 
         ## {away_team_full} (Away) Data
         - Defense: {team_defense_data[team_defense_data['Team_Full'] == away_team_full].to_string()}
-        - Passing Offense: {player_passing_data[player_passing_data['Team_Abbr'] == away_team_abbr].to_string()}
-        - Rushing Offense: {player_rushing_data[player_rushing_data['Team_Abbr'] == away_team_abbr].to_string()}
-        - Receiving Offense: {player_receiving_data[player_receiving_data['Team_Abbr'] == away_team_abbr].to_string()}
+        - Passing Offense (Active Players): {away_passing_roster.to_string()}
+        - Rushing Offense (Active Players): {away_rushing_roster.to_string()}
+        - Receiving Offense (Active Players): {away_receiving_roster.to_string()}
         ---
 
         Based on the structured data above, provide the following in a clear format:
         1. **Game Prediction:** Predicted Winner and Predicted Final Score.
         2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
-        3. **Justification:** A brief justification. You MUST specifically mention any "Key Players with Questionable Status" and describe how their potential absence could impact the outcome.
-        4. **Key Player Stat Predictions:** Predict stats for key players expected to play provide a confidence percentage from 1% to 100%.
-        5. **Touchdown Scorers:** List 2-3 players most likely to score a touchdown provide a confidence percentage from 1% to 100%.
+        3. **Justification:** A brief justification for your overall prediction.
+        4. **Key Player Stat Predictions:** Predict stats for key players expected to play (the ones listed in the data). Provide a confidence percentage from 1% to 100% for each prediction.
+        5. **Touchdown Scorers:** List 2-3 players who are most likely to score a **rushing or receiving** touchdown. Do not include quarterbacks for passing touchdowns. Provide a confidence percentage from 1% to 100% for each player.
         """
         
         try:

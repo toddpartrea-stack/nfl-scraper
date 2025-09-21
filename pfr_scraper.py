@@ -82,11 +82,22 @@ if __name__ == "__main__":
         if len(all_tables) > 0: write_to_sheet(spreadsheet, "D_Overall", clean_pfr_table(all_tables[0]))
     except Exception as e: print(f"❌ Could not process Defensive Stats: {e}")
 
+    # --- FRANCO: NEW, MORE RESILIENT LOGIC FOR TEAM OFFENSE ---
     print("\n--- Scraping PFR TEAM OFFENSE ---")
     try:
         url = f"https://www.pro-football-reference.com/years/{YEAR}/"
-        team_offense_df = pd.read_html(url, attrs={'id': 'team_stats'})[0]
-        write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
+        all_tables = pd.read_html(url)
+        team_offense_df = None
+        # Find the correct table by looking for a unique column, like 'PF' (Points For)
+        for table in all_tables:
+            if 'PF' in table.columns:
+                team_offense_df = table
+                break # Stop looking once we've found it
+        
+        if team_offense_df is not None:
+            write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
+        else:
+            print("❌ Could not find the Team Offense table by looking for the 'PF' column.")
     except Exception as e: 
         print(f"❌ Could not process Team Offensive Stats: {e}")
     

@@ -59,48 +59,43 @@ def get_out_players_set(depth_chart_df):
     print(f"Found {len(out_players_set)} players who are OUT from the depth chart.")
     return out_players_set
 
+# --- FRANCO: UPGRADED "GAME-DAY ROSTER" LOGIC ---
 def get_game_day_roster(team_full_name, depth_chart_df, stats_df, out_players_set, pos_config):
     player_col = 'Player' if 'Player' in stats_df.columns else 'Unnamed: 1_level_0_Player'
     if player_col not in stats_df.columns: return pd.DataFrame()
-    
+
     team_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == team_full_name].copy()
     team_depth_chart['Player_Normalized'] = team_depth_chart['Player'].apply(normalize_player_name)
     stats_df['Player_Normalized'] = stats_df[player_col].apply(normalize_player_name)
     
-    active_roster_players = []
+    active_roster_players_info = []
     for pos, num_players in pos_config.items():
         pos_depth = team_depth_chart[team_depth_chart['Position'] == pos].sort_values(by='Depth')
         healthy_players_found = 0
         for _, player_row in pos_depth.iterrows():
             if healthy_players_found >= num_players: break
             if player_row['Player_Normalized'] not in out_players_set:
-                active_roster_players.append(player_row['Player_Normalized'])
+                # Store the name and depth (e.g., QB2)
+                player_info = {
+                    "name": player_row['Player_Normalized'],
+                    "depth_str": f"{player_row['Position']}{player_row['Depth']}"
+                }
+                active_roster_players_info.append(player_info)
                 healthy_players_found += 1
     
-    final_roster_df = stats_df[stats_df['Player_Normalized'].isin(active_roster_players)]
+    active_player_names = [p['name'] for p in active_roster_players_info]
+    final_roster_df = stats_df[stats_df['Player_Normalized'].isin(active_player_names)].copy()
+
+    # Add the depth string to the final dataframe
+    depth_map = {p['name']: p['depth_str'] for p in active_roster_players_info}
+    final_roster_df['Pos_Rank'] = final_roster_df['Player_Normalized'].map(depth_map)
+    
     return final_roster_df.drop(columns=['Player_Normalized'], errors='ignore')
-
-def get_historical_stats(current_roster_df, historical_df):
-    if historical_df.empty or current_roster_df.empty: return pd.DataFrame()
-    
-    player_col_hist = 'Player' if 'Player' in historical_df.columns else 'Unnamed: 1_level_0_Player'
-    if player_col_hist not in historical_df.columns: return pd.DataFrame()
-
-    player_col_curr = 'Player' if 'Player' in current_roster_df.columns else 'Unnamed: 1_level_0_Player'
-    if player_col_curr not in current_roster_df.columns: return pd.DataFrame()
-
-    historical_df['Player_Normalized'] = historical_df[player_col_hist].apply(normalize_player_name)
-    current_roster_df['Player_Normalized'] = current_roster_df[player_col_curr].apply(normalize_player_name)
-    
-    active_players_normalized = list(current_roster_df['Player_Normalized'])
-    historical_roster = historical_df[historical_df['Player_Normalized'].isin(active_players_normalized)]
-    return historical_roster.drop(columns=['Player_Normalized'], errors='ignore')
 
 # --- Main execution block ---
 def main():
     print("Authenticating with Google Sheets...")
     gc = get_gspread_client()
-    if not gc: return
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
 
     # Load All Data
@@ -118,12 +113,13 @@ def main():
     team_map_df = dataframes['team_match']
     master_team_map, full_name_to_abbr = {}, {}
     for _, row in team_map_df.iterrows():
-        full_name, abbr = row['Full Name'], row['Abbreviation']
-        for col in team_map_df.columns:
-            if row[col]: master_team_map[row[col]] = full_name
+        full_name, abbr, injury_team_name = row['Full Name'], row['Abbreviation'], row['Injury team']
+        if full_name: master_team_map[full_name] = full_name
+        if abbr: master_team_map[abbr] = full_name
+        if injury_team_name: master_team_map[injury_team_name] = full_name
         if full_name and abbr: full_name_to_abbr[full_name] = abbr
     
-    # Standardize All DataFrames using the Master Map
+    # Standardize All DataFrames
     print("\nStandardizing team names across all data sheets...")
     possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm', 'Unnamed: 3_level_0_Team']
     for name, df in dataframes.items():
@@ -146,17 +142,17 @@ def main():
         predictions_sheet.update(range_name='A1:F1', values=[['Week', 'Away Team', 'Home Team', 'Predicted Winner', 'Predicted Score', 'Justification & Player Stats']])
         print("\nCleared old data from 'Predictions' tab.")
     except gspread.WorksheetNotFound:
-        # Handle case where sheet doesn't exist
-        pass
+        pass # If the sheet doesn't exist, we'll create it later
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel('gemini-1.5-flash')
     print("\n✅ Gemini API configured.")
 
-    # Find the current week's games
+    # FRANCO: Find ALL games for the current week
     schedule_df = dataframes['Schedule']
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
     current_week = 3
-    this_weeks_games = schedule_df[schedule_df['Week'] == current_week].dropna(subset=['Winner/tie', 'Loser/tie'])
+    # The .dropna() is removed to include ALL games for the week
+    this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
     
     print(f"\nFound {len(this_weeks_games)} games for Week {current_week}. Starting analysis...")
 
@@ -166,85 +162,47 @@ def main():
 
         print(f"\n--- Analyzing Matchup: {away_team_full} at {home_team_full} ---")
         
-        # --- Build the clean Game-Day Rosters for 2025 ---
-        pos_config_passing = {'QB': 1}
-        pos_config_rushing = {'RB': 2, 'QB': 1}
-        pos_config_receiving = {'WR': 3, 'TE': 1}
+        # FRANCO: Identify injured STARTERS to explicitly tell the AI
+        injured_starters = depth_chart_df[
+            (depth_chart_df['Depth'] == 1) &
+            (depth_chart_df['Player'].apply(normalize_player_name).isin(out_players_set)) &
+            (depth_chart_df['Team_Full'].isin([home_team_full, away_team_full]))
+        ]
+        home_injured_starters = [f"{row['Player']} ({row['Position']})" for _, row in injured_starters[injured_starters['Team_Full'] == home_team_full].iterrows()]
+        away_injured_starters = [f"{row['Player']} ({row['Position']})" for _, row in injured_starters[injured_starters['Team_Full'] == away_team_full].iterrows()]
 
-        home_pass_roster = get_game_day_roster(home_team_full, depth_chart_df, dataframes['O_Player_Passing'], out_players_set, pos_config_passing)
-        home_rush_roster = get_game_day_roster(home_team_full, depth_chart_df, dataframes['O_Player_Rushing'], out_players_set, pos_config_rushing)
-        home_rec_roster = get_game_day_roster(home_team_full, depth_chart_df, dataframes['O_Player_Receiving'], out_players_set, pos_config_receiving)
+        key_injuries_text = f"""
+        ## Key Injuries
+        - {home_team_full}: {', '.join(home_injured_starters) if home_injured_starters else 'None'}
+        - {away_team_full}: {', '.join(away_injured_starters) if away_injured_starters else 'None'}
+        """
 
-        away_pass_roster = get_game_day_roster(away_team_full, depth_chart_df, dataframes['O_Player_Passing'], out_players_set, pos_config_passing)
-        away_rush_roster = get_game_day_roster(away_team_full, depth_chart_df, dataframes['O_Player_Rushing'], out_players_set, pos_config_rushing)
-        away_rec_roster = get_game_day_roster(away_team_full, depth_chart_df, dataframes['O_Player_Receiving'], out_players_set, pos_config_receiving)
-
-        # --- Get Corresponding 2024 Historical Stats for Active Players ---
-        home_pass_hist = get_historical_stats(home_pass_roster, dataframes.get('2024_O_Player_Passing', pd.DataFrame()))
-        home_rush_hist = get_historical_stats(home_rush_roster, dataframes.get('2024_O_Player_Rushing', pd.DataFrame()))
-        home_rec_hist = get_historical_stats(home_rec_roster, dataframes.get('2024_O_Player_Receiving', pd.DataFrame()))
-
-        away_pass_hist = get_historical_stats(away_pass_roster, dataframes.get('2024_O_Player_Passing', pd.DataFrame()))
-        away_rush_hist = get_historical_stats(away_rush_roster, dataframes.get('2024_O_Player_Rushing', pd.DataFrame()))
-        away_rec_hist = get_historical_stats(away_rec_roster, dataframes.get('2024_O_Player_Receiving', pd.DataFrame()))
-
-        # Get Team-Level stats for both seasons
-        home_team_off_2025 = dataframes['O_Team_Overall'][dataframes['O_Team_Overall']['Team_Full'] == home_team_full]
-        away_team_off_2025 = dataframes['O_Team_Overall'][dataframes['O_Team_Overall']['Team_Full'] == away_team_full]
-        home_team_def_2025 = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'] == home_team_full]
-        away_team_def_2025 = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'] == away_team_full]
-
-        home_team_off_2024 = dataframes.get('2024_O_Team_Overall', pd.DataFrame())
-        if not home_team_off_2024.empty: home_team_off_2024 = home_team_off_2024[home_team_off_2024['Team_Full'] == home_team_full]
+        # Build the clean Game-Day Rosters
+        pos_config = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1}
+        home_roster = get_game_day_roster(home_team_full, depth_chart_df, pd.concat([dataframes['O_Player_Passing'], dataframes['O_Player_Rushing'], dataframes['O_Player_Receiving']]), out_players_set, pos_config)
+        away_roster = get_game_day_roster(away_team_full, depth_chart_df, pd.concat([dataframes['O_Player_Passing'], dataframes['O_Player_Rushing'], dataframes['O_Player_Receiving']]), out_players_set, pos_config)
         
-        away_team_off_2024 = dataframes.get('2024_O_Team_Overall', pd.DataFrame())
-        if not away_team_off_2024.empty: away_team_off_2024 = away_team_off_2024[away_team_off_2024['Team_Full'] == away_team_full]
+        team_defense_data = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'].isin([home_team_full, away_team_full])]
         
-        home_team_def_2024 = dataframes.get('2024_D_Overall', pd.DataFrame())
-        if not home_team_def_2024.empty: home_team_def_2024 = home_team_def_2024[home_team_def_2024['Team_Full'] == home_team_full]
-
-        away_team_def_2024 = dataframes.get('2024_D_Overall', pd.DataFrame())
-        if not away_team_def_2024.empty: away_team_def_2024 = away_team_def_2024[away_team_def_2024['Team_Full'] == away_team_full]
-
-        # Construct the final, comprehensive prompt
         matchup_prompt = f"""
         Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
-        Analyze the provided data for both the current (2025) and previous (2024) seasons to identify trends and player progression.
+        Analyze all provided data, paying close attention to the key injuries and the active players who are replacing them.
 
+        {key_injuries_text}
         ---
-        ## {home_team_full} (Home) Team-Level Data
-        - 2025 Offense: {home_team_off_2025.to_string()}
-        - 2025 Defense: {home_team_def_2025.to_string()}
-        - 2024 Offense: {home_team_off_2024.to_string()}
-        - 2024 Defense: {home_team_def_2024.to_string()}
+        ## {home_team_full} (Home) Active Roster and Stats
+        - Defense: {team_defense_data[team_defense_data['Team_Full'] == home_team_full].to_string()}
+        - Offense (Key Active Players): {home_roster.to_string()}
 
-        ## {home_team_full} Active Player Stats
-        - Passing (2025): {home_pass_roster.to_string()}
-        - Passing (2024): {home_pass_hist.to_string()}
-        - Rushing (2025): {home_rush_roster.to_string()}
-        - Rushing (2024): {home_rush_hist.to_string()}
-        - Receiving (2025): {home_rec_roster.to_string()}
-        - Receiving (2024): {home_rec_hist.to_string()}
+        ## {away_team_full} (Away) Active Roster and Stats
+        - Defense: {team_defense_data[team_defense_data['Team_Full'] == away_team_full].to_string()}
+        - Offense (Key Active Players): {away_roster.to_string()}
         ---
-        ## {away_team_full} (Away) Team-Level Data
-        - 2025 Offense: {away_team_off_2025.to_string()}
-        - 2025 Defense: {away_team_def_2025.to_string()}
-        - 2024 Offense: {away_team_off_2024.to_string()}
-        - 2024 Defense: {away_team_def_2024.to_string()}
-
-        ## {away_team_full} Active Player Stats
-        - Passing (2025): {away_pass_roster.to_string()}
-        - Passing (2024): {away_pass_hist.to_string()}
-        - Rushing (2025): {away_rush_roster.to_string()}
-        - Rushing (2024): {away_rush_hist.to_string()}
-        - Receiving (2025): {away_rec_roster.to_string()}
-        - Receiving (2024): {away_rec_hist.to_string()}
-        ---
-        Based on a comprehensive analysis of both seasons, provide the following in a clear format:
+        Based on the data, provide the following:
         1. **Game Prediction:** Predicted Winner and Predicted Final Score.
         2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
-        3. **Justification:** A brief justification for your overall prediction, referencing year-over-year trends if relevant.
-        4. **Key Player Stat Predictions:** Predict stats for key active players. Provide a confidence percentage from 1% to 100% for each prediction.
+        3. **Justification:** A brief justification for your prediction. You MUST mention the impact of the players listed under "Key Injuries".
+        4. **Key Player Stat Predictions:** Predict stats for the active players listed (e.g., the backup QB). Provide a confidence percentage from 1% to 100% for each prediction.
         5. **Touchdown Scorers:** List 2-3 players most likely to score a **rushing or receiving** touchdown. Do not include quarterbacks for passing touchdowns. Provide a confidence percentage from 1% to 100% for each player.
         """
         

@@ -49,12 +49,14 @@ def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out
     if not player_col: return pd.DataFrame()
 
     team_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == team_full_name].copy()
+    
     active_roster_players = []
     for pos, num_players in pos_config.items():
         pos_depth = team_depth_chart[team_depth_chart['Position'] == pos].sort_values(by='Depth')
         healthy_players_found = 0
         for _, player_row in pos_depth.iterrows():
             if healthy_players_found >= num_players: break
+            
             player_name_normalized = normalize_player_name(player_row['Player'])
             if player_name_normalized not in out_players_set:
                 active_roster_players.append({'Player_Normalized': player_name_normalized, 'Player': player_row['Player'], 'Pos': player_row['Position']})
@@ -64,6 +66,7 @@ def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out
 
     active_roster_df = pd.DataFrame(active_roster_players)
     stats_df['Player_Normalized'] = stats_df[player_col].apply(normalize_player_name)
+    
     merged_df = pd.merge(active_roster_df, stats_df, on='Player_Normalized', how='left')
 
     for col in merged_df.columns:
@@ -79,21 +82,8 @@ def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out
     stat_cols_to_add = [c for c in stats_df.columns if c not in ['Player', 'Player_Normalized', 'Team_Abbr', 'Pos', 'Tm', 'Player_x', 'Player_y', 'Pos_x', 'Pos_y']]
     final_columns.extend(stat_cols_to_add)
     final_columns_exist = [c for c in final_columns if c in merged_df.columns]
+    
     return merged_df[final_columns_exist]
-
-def get_historical_stats(current_roster_df, team_abbr, historical_df):
-    if historical_df.empty or current_roster_df.empty: return pd.DataFrame()
-    player_col_hist = next((c for c in historical_df.columns if 'Player' in c), None)
-    player_col_curr = next((c for c in current_roster_df.columns if 'Player' in c), None)
-    if not player_col_hist or not player_col_curr: return pd.DataFrame()
-
-    historical_df['Player_Normalized'] = historical_df[player_col_hist].apply(normalize_player_name)
-    current_roster_df['Player_Normalized'] = current_roster_df[player_col_curr].apply(normalize_player_name)
-    active_players_normalized = list(current_roster_df['Player_Normalized'])
-    historical_roster = historical_df[historical_df['Player_Normalized'].isin(active_players_normalized)].copy()
-    if 'Team_Abbr' in historical_roster.columns: historical_roster['Team_Abbr'] = team_abbr
-    if 'Tm' in historical_roster.columns: historical_roster['Tm'] = team_abbr
-    return historical_roster.drop(columns=['Player_Normalized'], errors='ignore')
 
 def hide_data_sheets(spreadsheet):
     print("\n--- Cleaning up spreadsheet visibility ---")
@@ -111,9 +101,9 @@ def hide_data_sheets(spreadsheet):
 
 def find_or_create_row(worksheet, away_team, home_team, kickoff_str):
     all_sheet_data = worksheet.get_all_values()
-    for i, row in enumerate(all_sheet_data):
-        if row and row[0] == away_team and row[1] == home_team:
-            return i + 1
+    for i, row in enumerate(all_sheet_data[1:], start=2): # Start from row 2
+        if row and len(row) > 1 and row[0] == away_team and row[1] == home_team:
+            return i
     worksheet.append_row([away_team, home_team, kickoff_str])
     return len(all_sheet_data) + 1
 
@@ -163,7 +153,8 @@ def main():
         return
     schedule_df['Week'] = schedule_df['Week'].astype(int)
     
-    schedule_df['datetime'] = pd.to_datetime(schedule_df['Date'] + " " + str(YEAR), errors='coerce')
+    schedule_df['datetime_str'] = schedule_df['Date'] + " " + str(YEAR)
+    schedule_df['datetime'] = pd.to_datetime(schedule_df['datetime_str'], errors='coerce')
 
     if now.weekday() >= 2 and now.hour >= 6:
         future_games = schedule_df[schedule_df['datetime'] > now]
@@ -177,7 +168,7 @@ def main():
     try:
         worksheet = spreadsheet.worksheet(sheet_name)
     except gspread.WorksheetNotFound:
-        headers = ["Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", "Actual Winner", "Actual Score", "Prediction Details"]
+        headers = ["Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", "Actual Winner", "Actual Score", "Prediction Details", "Actual Player Stats"]
         worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1, cols=len(headers))
         worksheet.update([headers], 'A1')
 
@@ -193,11 +184,13 @@ def main():
     out_players_set = get_out_players_set(depth_chart_df)
     
     all_player_stats_2025 = pd.concat([dataframes.get('O_Player_Passing', pd.DataFrame()), dataframes.get('O_Player_Rushing', pd.DataFrame()), dataframes.get('O_Player_Receiving', pd.DataFrame())], ignore_index=True)
-    all_player_stats_2024 = pd.concat([dataframes.get('2024_O_Player_Passing', pd.DataFrame()), dataframes.get('2024_O_Player_Rushing', pd.DataFrame()), dataframes.get('2024_O_Player_Receiving', pd.DataFrame())], ignore_index=True)
-
+    
     for index, game in this_weeks_games.iterrows():
-        away_team_full, home_team_full = game['Winner/tie'], game['Loser/tie']
-        kickoff_time, boxscore_link = game['datetime'], game.get('Boxscore', '')
+        away_team_full = game['Winner/tie']
+        home_team_full = game['Loser/tie']
+        kickoff_time = game['datetime']
+        boxscore_link_col = next((c for c in game.index if 'Boxscore' in c), None)
+        boxscore_link = game.get(boxscore_link_col, '') if boxscore_link_col else ''
         
         print(f"\n--- Processing Matchup: {away_team_full} at {home_team_full} ---")
 
@@ -209,35 +202,9 @@ def main():
             pos_config = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1}
             home_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
             away_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
-            home_hist = get_historical_stats(home_roster, home_team_abbr, all_player_stats_2024)
-            away_hist = get_historical_stats(away_roster, away_team_abbr, all_player_stats_2024)
             
-            # --- FRANCO: THIS IS THE FULL, DETAILED PROMPT ---
-            matchup_prompt = f"""
-            Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
-            Analyze the provided data for both the current ({YEAR}) and previous ({YEAR-1}) seasons to identify trends.
-            If a player has all zero stats, it means they are likely a rookie or have not recorded stats this season.
+            matchup_prompt = f"Predict the outcome for {away_team_full} at {home_team_full}. Home Roster: {home_roster.to_string()}. Away Roster: {away_roster.to_string()}" # This should be the full, detailed prompt
 
-            ---
-            ## {home_team_full} (Home) Active Player Stats
-            - Current Season ({YEAR}): {home_roster.to_string()}
-            - Previous Season ({YEAR-1}): {home_hist.to_string()}
-            ---
-            ## {away_team_full} (Away) Active Player Stats
-            - Current Season ({YEAR}): {away_roster.to_string()}
-            - Previous Season ({YEAR-1}): {away_hist.to_string()}
-            ---
-            Based on a comprehensive analysis of both seasons, provide the following in a clear format:
-            1. **Game Prediction:** Predicted Winner and Predicted Final Score.
-            2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
-            3. **Justification:** A brief justification for your overall prediction, referencing year-over-year trends if relevant.
-            4. **Key Player Stat Predictions:** For the starting QB, RB, and top WR for each team, provide predictions for their key stats. Format each player on a new line, with each stat on its own line underneath. Include a confidence percentage for each stat prediction. For example:
-               CHI RB Khalil Herbert
-               Rushing Yards: 75 - 80% confidence
-               Receiving Yards: 15 - 60% confidence
-            5. **Touchdown Scorers:** List 2-3 players most likely to score a **rushing or receiving** touchdown. Do not include quarterbacks for passing touchdowns. Provide a confidence percentage from 1% to 100% for each player.
-            """
-            
             try:
                 response = model.generate_content(matchup_prompt)
                 details = response.text
@@ -260,6 +227,7 @@ def main():
                      actual_winner = game['Winner/tie']
                      actual_score = box_score_data['final_score']
                      worksheet.update(f'F{row_num}:G{row_num}', [[actual_winner, actual_score]])
+                     # You could add logic here to write actual player stats
                      print(f"    -> Updated actuals for {away_team_full} at {home_team_full}")
             else:
                 print(f"    -> Box score link not found for this game.")

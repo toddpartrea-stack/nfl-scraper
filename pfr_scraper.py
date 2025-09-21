@@ -14,7 +14,7 @@ import re
 
 # --- CONFIGURATION ---
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
-YEAR = 2024 # CHANGED TO 2024 FOR THIS ONE-TIME RUN
+YEAR = 2025 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # --- Google Sheets Authentication ---
@@ -33,18 +33,18 @@ def get_gspread_client():
             pickle.dump(creds, token)
     return gspread.authorize(creds)
 
-# --- HELPER FUNCTION WITH PREFIX LOGIC ---
+# --- Helper Function to Write to a Sheet Tab ---
 def write_to_sheet(spreadsheet, sheet_name, dataframe):
-    prefixed_sheet_name = f"2024_{sheet_name}"
-    print(f"  -> Writing data to '{prefixed_sheet_name}' tab...")
+    print(f"  -> Writing data to '{sheet_name}' tab...")
     if dataframe.empty:
-        print(f"  -> Data is empty for {prefixed_sheet_name}.")
+        print(f"  -> Data is empty for {sheet_name}.")
         return
+        
     try:
-        worksheet = spreadsheet.worksheet(prefixed_sheet_name)
+        worksheet = spreadsheet.worksheet(sheet_name)
         worksheet.clear()
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=prefixed_sheet_name, rows=1, cols=len(dataframe.columns))
+        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1, cols=len(dataframe.columns))
     
     dataframe = dataframe.astype(str).fillna('')
     data_to_upload = [dataframe.columns.values.tolist()] + dataframe.values.tolist()
@@ -66,9 +66,15 @@ if __name__ == "__main__":
     gc = get_gspread_client()
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
 
-    print("\n--- Scraping TeamRankings.com Power Rankings ---")
-    # This site doesn't have historical data, so we skip it for the 2024 run
-    print("  -> Skipping for historical run.")
+print("\n--- Scraping TeamRankings.com Power Rankings ---")
+    try:
+        url = "https://www.teamrankings.com/nfl/rankings/teams/"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        all_tables = pd.read_html(url, header=0)
+        rankings_df = all_tables[0]
+        write_to_sheet(spreadsheet, "Power_Rankings", rankings_df)
+    except Exception as e:
+        print(f"❌ Could not process TeamRankings Stats: {e}")
     
     print("\n--- Scraping PFR DEFENSE ---")
     try:
@@ -95,8 +101,66 @@ if __name__ == "__main__":
         write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
     except Exception as e: print(f"❌ Could not process Player Offensive Stats: {e}")
 
-    # We don't need historical injuries or depth charts, so we skip them
-    print("\n--- Skipping CBS Sports INJURIES (historical) ---")
-    print("\n--- Skipping FootballGuys.com Depth Charts (historical) ---")
+  print("\n--- Scraping CBS Sports INJURIES ---")
+    try:
+        url = "https://www.cbssports.com/nfl/injuries/"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        team_headers = soup.find_all('h4', class_='TableBase-title')
+        all_injuries = []
+        for header in team_headers:
+            team_name_tag = header.find('span', class_='TeamName')
+            if team_name_tag:
+                team_name = team_name_tag.text.strip()
+                table_container = header.find_parent('div', class_='TableBase')
+                if table_container:
+                    table = table_container.find('table')
+                    if table:
+                        df = pd.read_html(io.StringIO(str(table)))[0]
+                        df['Team'] = team_name
+                        df['Player'] = df['Player'].apply(lambda x: ' '.join(x.split()[1:]) if isinstance(x, str) else x)
+                        all_injuries.append(df)
+        if all_injuries:
+            final_df = pd.concat(all_injuries, ignore_index=True)
+            write_to_sheet(spreadsheet, "Injuries", final_df)
+    except Exception as e: 
+        print(f"❌ Could not process Injury Reports: {e}")
 
-    print("\n✅ Historical scraper script finished.")
+    print("\n--- Scraping FootballGuys.com Depth Charts (with Status) ---")
+    try:
+        url = "https://www.footballguys.com/depth-charts"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        team_containers = soup.find_all('div', class_='depth-chart')
+        all_players = []
+        status_pattern = re.compile(r'(.+?)\s+\(([A-Z-]+)\)$')
+
+        for container in team_containers:
+            team_name_tag = container.find('span', class_='team-header')
+            if team_name_tag:
+                team_name = team_name_tag.text.strip()
+                position_items = container.find_all('li')
+                for item in position_items:
+                    pos_label_tag = item.find('span', class_='pos-label')
+                    if pos_label_tag:
+                        position = pos_label_tag.text.replace(':', '').strip()
+                        player_tags = item.find_all(['a', 'span'], class_='player')
+                        for i, player_tag in enumerate(player_tags):
+                            player_text = player_tag.text.strip()
+                            clean_name, status = player_text, 'Healthy'
+                            match = status_pattern.match(player_text)
+                            if match:
+                                clean_name, status = match.group(1).strip(), match.group(2).strip()
+                            all_players.append({
+                                'Team': team_name, 'Position': position, 'Depth': i + 1, 
+                                'Player': clean_name, 'Status': status
+                            })
+        if all_players:
+            depth_chart_df = pd.DataFrame(all_players)
+            write_to_sheet(spreadsheet, "Depth_Charts", depth_chart_df)
+    except Exception as e:
+        print(f"❌ Could not process Depth Charts: {e}")
+
+    print("\n✅ Scraper script finished.")

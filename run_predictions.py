@@ -59,13 +59,12 @@ def get_out_players_set(depth_chart_df):
     print(f"Found {len(out_players_set)} players who are OUT from the depth chart.")
     return out_players_set
 
+# --- FRANCO: FINAL VERSION OF "GAME-DAY ROSTER" LOGIC ---
 def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out_players_set, pos_config):
-    player_col = 'Player' if 'Player' in stats_df.columns else 'Unnamed: 1_level_0_Player'
-    if player_col not in stats_df.columns: 
-        player_col = next((c for c in stats_df.columns if 'player' in c.lower()), None)
-        if not player_col:
-            print(f"ERROR: Could not find any player column in a stats sheet. Columns are: {stats_df.columns.tolist()}")
-            return pd.DataFrame()
+    player_col = next((c for c in ['Player', 'Unnamed: 1_level_0_Player'] if c in stats_df.columns), None)
+    if not player_col:
+        print(f"ERROR: Could not find any player column in a stats sheet. Columns are: {stats_df.columns.tolist()}")
+        return pd.DataFrame()
 
     team_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == team_full_name].copy()
     
@@ -87,28 +86,28 @@ def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out
 
     if not active_roster_players:
         return pd.DataFrame()
-        
-    # --- FRANCO: DEBUGGING ---
-    print(f"DEBUG: Normalized names from {team_full_name} Depth Chart: {[p['Player_Normalized'] for p in active_roster_players]}")
-    stats_df['Player_Normalized'] = stats_df[player_col].apply(normalize_player_name)
-    print(f"DEBUG: First 20 Normalized names from Stats Sheet: {stats_df['Player_Normalized'].head(20).tolist()}")
-    # --- END DEBUGGING ---
 
     active_roster_df = pd.DataFrame(active_roster_players)
+    stats_df['Player_Normalized'] = stats_df[player_col].apply(normalize_player_name)
+    
     merged_df = pd.merge(active_roster_df, stats_df, on='Player_Normalized', how='left')
 
+    # For players who have no stats (e.g., rookies), fill missing numerical data with 0
     for col in merged_df.columns:
         if pd.api.types.is_numeric_dtype(merged_df[col]):
-            merged_df[col].fillna(0, inplace=True)
+            merged_df[col] = merged_df[col].fillna(0)
     
-    merged_df['Player_x'].fillna(merged_df['Player_y'], inplace=True)
-    merged_df.rename(columns={'Player_x': 'Player'}, inplace=True)
-    merged_df['Tm'].fillna(team_abbr, inplace=True)
-    merged_df['Pos_x'].fillna(merged_df['Pos_y'], inplace=True)
-    merged_df.rename(columns={'Pos_x': 'Pos'}, inplace=True)
+    # Fill missing text data with reasonable defaults
+    merged_df['Player'] = merged_df['Player_x'].fillna(merged_df['Player_y'])
+    merged_df['Pos'] = merged_df['Pos_x'].fillna(merged_df['Pos_y'])
+    # Use the standardized 'Team_Abbr' column
+    if 'Team_Abbr' not in merged_df.columns:
+        merged_df['Team_Abbr'] = team_abbr
+    merged_df['Team_Abbr'] = merged_df['Team_Abbr'].fillna(team_abbr)
 
-    final_columns = ['Player', 'Tm', 'Pos']
-    stat_cols_to_add = [c for c in stats_df.columns if c not in ['Player', 'Player_Normalized', 'Tm', 'Pos']]
+    # Select and reorder columns for a clean output
+    final_columns = ['Player', 'Team_Abbr', 'Pos']
+    stat_cols_to_add = [c for c in stats_df.columns if c not in ['Player', 'Player_Normalized', 'Team_Abbr', 'Pos', 'Tm']]
     final_columns.extend(stat_cols_to_add)
     final_columns_exist = [c for c in final_columns if c in merged_df.columns]
     

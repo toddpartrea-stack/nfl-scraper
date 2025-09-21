@@ -153,8 +153,9 @@ def main():
             df.columns = ['_'.join(col).strip() for col in df.columns.values]
         team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
         if team_col_found:
-            df['Team_Full'] = df[team_col_found].map(master_team_map)
-            df.dropna(subset=['Team_Full'], inplace=True)
+            # This new logic uses the original name as a fallback instead of dropping the row
+            df['Team_Full'] = df[team_col_found].map(master_team_map).fillna(df[team_col_found])
+            df.dropna(subset=['Team_Full'], inplace=True) # This now only drops rows that were originally blank
             df['Team_Abbr'] = df['Team_Full'].map(full_name_to_abbr)
             print(f"  -> Standardized team names for '{name}' sheet.")
 

@@ -147,8 +147,12 @@ def main():
         if full_name and abbr: full_name_to_abbr[full_name] = abbr
     
     print("\nStandardizing team names across all data sheets...")
-    possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm', 'Unnamed: 3_level_0_Team', 'At', 'Boxscore']
+    possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'At', 'Boxscore']
     for name, df in dataframes.items():
+        # Handle potential multi-index columns from scraper
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = ['_'.join(col).strip() for col in df.columns.values]
+
         team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
         if team_col_found:
             df['Team_Full'] = df[team_col_found].map(master_team_map)
@@ -157,26 +161,16 @@ def main():
             print(f"  -> Standardized team names for '{name}' sheet.")
 
     print("\nDetermining current week...")
+    WEEK_1_START_DATE = date(YEAR, 9, 3) 
     today = date.today()
+    days_since_start = (today - WEEK_1_START_DATE).days
+    current_week = (days_since_start // 7) + 1
+    print(f"  -> Based on a season start date of {WEEK_1_START_DATE}, the current NFL week is: {current_week}")
+
     schedule_df = dataframes['Schedule']
-    
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
-    schedule_df.dropna(subset=['Week'], inplace=True)
-    if schedule_df.empty:
-        print("Error: No valid week data in Schedule tab. Exiting.")
-        return
-    schedule_df['Week'] = schedule_df['Week'].astype(int)
-    
     schedule_df['game_date'] = pd.to_datetime(schedule_df['Date'] + " " + str(YEAR), errors='coerce').dt.date
-    schedule_df.dropna(subset=['game_date'], inplace=True)
-
-    past_or_present_games = schedule_df[schedule_df['game_date'] <= today]
-    if not past_or_present_games.empty:
-        current_week = int(past_or_present_games['Week'].max())
-    else:
-        current_week = 1
-    print(f"  -> Current NFL week is: {current_week}")
-
+    
     sheet_name = f"Week_{current_week}_Predictions"
     try:
         worksheet = spreadsheet.worksheet(sheet_name)
@@ -228,14 +222,16 @@ def main():
             Analyze the provided data for both the current ({YEAR}) and previous ({YEAR-1}) seasons to identify trends.
             If a player has all zero stats, it means they are likely a rookie or have not recorded stats this season.
 
+            ---
             ## {home_team_full} (Home) Active Player Stats
             - Current Season ({YEAR}): {home_roster.to_string()}
             - Previous Season ({YEAR-1}): {home_hist.to_string()}
+            ---
             ## {away_team_full} (Away) Active Player Stats
             - Current Season ({YEAR}): {away_roster.to_string()}
             - Previous Season ({YEAR-1}): {away_hist.to_string()}
             ---
-            Based on a comprehensive analysis, provide the following in a clear format:
+            Based on a comprehensive analysis of both seasons, provide the following in a clear format:
             1. **Game Prediction:** Predicted Winner and Predicted Final Score.
             2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
             3. **Justification:** A brief justification for your overall prediction, referencing year-over-year trends if relevant.

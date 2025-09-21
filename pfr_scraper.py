@@ -2,14 +2,14 @@ import requests
 import pandas as pd
 import gspread
 from bs4 import BeautifulSoup
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
 import os
 import pickle
 import io
-import re
 from datetime import datetime
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request # FRANCO: This was the missing import
+import re
 
 # --- CONFIGURATION ---
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
@@ -108,8 +108,8 @@ def scrape_schedule(year):
             return pd.DataFrame()
 
         headers = [th.text.strip() for th in table.find('thead').find_all('th')]
-        headers[5] = 'At'       # The column with the '@' symbol
-        headers[7] = 'Boxscore' # The column with the boxscore link
+        headers[5] = 'At'
+        headers[7] = 'Boxscore'
         
         rows = []
         for row in table.find('tbody').find_all('tr'):
@@ -173,7 +173,7 @@ if __name__ == "__main__":
         if team_offense_df is not None:
             write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
         else:
-            print("❌ Could not find the Team Offense table by looking for the 'PF' column.")
+            print("❌ Could not find the Team Offense table.")
     except Exception as e: 
         print(f"❌ Could not process Team Offensive Stats: {e}")
     

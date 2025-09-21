@@ -94,18 +94,78 @@ def scrape_box_score(box_score_url):
         print(f"    -> An error occurred scraping the box score: {e}")
         return None
 
+def scrape_schedule(year):
+    print("\n--- Scraping PFR SCHEDULE ---")
+    try:
+        url = f"https://www.pro-football-reference.com/years/{year}/games.htm"
+        response = requests.get(url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        table = soup.find('table', id='games')
+        if not table:
+            print("❌ Could not find schedule table.")
+            return pd.DataFrame()
+
+        rows = []
+        headers = [th.text.strip() for th in table.find('thead').find_all('th')]
+        
+        for row in table.find('tbody').find_all('tr'):
+            # Skip divider rows
+            if row.find('th', class_='thead'):
+                continue
+            
+            cols = row.find_all(['th', 'td'])
+            if not cols:
+                continue
+
+            row_data = [ele.text.strip() for ele in cols]
+            
+            # Specifically find the boxscore link in the 8th column (index 7)
+            boxscore_cell = cols[7]
+            boxscore_link_tag = boxscore_cell.find('a')
+            if boxscore_link_tag and 'href' in boxscore_link_tag.attrs:
+                row_data[7] = boxscore_link_tag['href']
+            
+            rows.append(row_data)
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows, columns=headers)
+        df.rename(columns={'': 'Boxscore'}, inplace=True)
+        return df
+
+    except Exception as e:
+        print(f"❌ Could not process Schedule: {e}")
+        return pd.DataFrame()
+
 # --- MAIN SCRIPT FOR DAILY DATA DUMP ---
 if __name__ == "__main__":
     print("Authenticating with Google Sheets...")
     gc = get_gspread_client()
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
 
-    print("\n--- Scraping PFR SCHEDULE ---")
+    schedule_df = scrape_schedule(YEAR)
+    if not schedule_df.empty:
+        write_to_sheet(spreadsheet, "Schedule", schedule_df)
+
+    print("\n--- Scraping TeamRankings.com Power Rankings ---")
     try:
-        schedule_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/games.htm")[0]
-        write_to_sheet(spreadsheet, "Schedule", clean_pfr_table(schedule_df))
+        url = "https://www.teamrankings.com/nfl/rankings/teams/"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        rankings_df = pd.read_html(url, header=0)[0]
+        write_to_sheet(spreadsheet, "Power_Rankings", rankings_df)
     except Exception as e:
-        print(f"❌ Could not process Schedule: {e}")
+        print(f"❌ Could not process TeamRankings Stats: {e}")
+    
+    print("\n--- Scraping PFR DEFENSE ---")
+    try:
+        url = f"https://www.pro-football-reference.com/years/{YEAR}/opp.htm"
+        defense_df = pd.read_html(url)[0]
+        write_to_sheet(spreadsheet, "D_Overall", clean_pfr_table(defense_df))
+    except Exception as e:
+        print(f"❌ Could not process Defensive Stats: {e}")
 
     print("\n--- Scraping PFR TEAM OFFENSE ---")
     try:
@@ -122,6 +182,17 @@ if __name__ == "__main__":
             print("❌ Could not find the Team Offense table by looking for the 'PF' column.")
     except Exception as e: 
         print(f"❌ Could not process Team Offensive Stats: {e}")
+    
+    print("\n--- Scraping PFR PLAYER OFFENSE ---")
+    try:
+        passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]
+        rushing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/rushing.htm")[0]
+        receiving_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/receiving.htm")[0]
+        write_to_sheet(spreadsheet, "O_Player_Passing", clean_pfr_table(passing_df))
+        write_to_sheet(spreadsheet, "O_Player_Rushing", clean_pfr_table(rushing_df))
+        write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
+    except Exception as e:
+        print(f"❌ Could not process Player Offensive Stats: {e}")
 
     print("\n--- Scraping FootballGuys.com Depth Charts (with Status) ---")
     try:

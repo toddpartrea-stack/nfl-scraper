@@ -1,7 +1,7 @@
 import google.generativeai as genai
 import gspread
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 import time
 import re
 import os
@@ -157,7 +157,7 @@ def main():
             print(f"  -> Standardized team names for '{name}' sheet.")
 
     print("\nDetermining current week with Wednesday rollover...")
-    today = datetime.now().date()
+    today = date.today()
     schedule_df = dataframes['Schedule']
     
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
@@ -199,7 +199,7 @@ def main():
     
     all_player_stats_2025 = pd.concat([dataframes.get('O_Player_Passing', pd.DataFrame()), dataframes.get('O_Player_Rushing', pd.DataFrame()), dataframes.get('O_Player_Receiving', pd.DataFrame())], ignore_index=True)
     all_player_stats_2024 = pd.concat([dataframes.get('2024_O_Player_Passing', pd.DataFrame()), dataframes.get('2024_O_Player_Rushing', pd.DataFrame()), dataframes.get('2024_O_Player_Receiving', pd.DataFrame())], ignore_index=True)
-
+    
     for index, game in this_weeks_games.iterrows():
         home_team_full = game['Loser/tie'] if game['At'] == '@' else game['Winner/tie']
         away_team_full = game['Winner/tie'] if game['At'] == '@' else game['Loser/tie']

@@ -2,13 +2,9 @@ import requests
 import pandas as pd
 import gspread
 from bs4 import BeautifulSoup
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
 import os
 import pickle
 import io
-from datetime import datetime
 import re
 
 # --- CONFIGURATION ---
@@ -26,6 +22,8 @@ def get_gspread_client():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            from google_auth_oauthlib.flow import InstalledAppFlow
+            from google.auth.transport.requests import Request
             flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
             creds = flow.run_local_server(port=0)
         with open('token.pickle', 'wb') as token:
@@ -107,35 +105,29 @@ def scrape_schedule(year):
             print("❌ Could not find schedule table.")
             return pd.DataFrame()
 
-        rows = []
         headers = [th.text.strip() for th in table.find('thead').find_all('th')]
+        headers[5] = 'At'       # The column with the '@' symbol
+        headers[7] = 'Boxscore' # The column with the boxscore link
         
+        rows = []
         for row in table.find('tbody').find_all('tr'):
-            # Skip divider rows
-            if row.find('th', class_='thead'):
-                continue
+            if row.find('th', class_='thead'): continue
             
             cols = row.find_all(['th', 'td'])
-            if not cols:
-                continue
+            if len(cols) < len(headers): continue
 
             row_data = [ele.text.strip() for ele in cols]
             
-            # Specifically find the boxscore link in the 8th column (index 7)
-            boxscore_cell = cols[7]
-            boxscore_link_tag = boxscore_cell.find('a')
+            boxscore_link_tag = cols[7].find('a')
             if boxscore_link_tag and 'href' in boxscore_link_tag.attrs:
                 row_data[7] = boxscore_link_tag['href']
             
             rows.append(row_data)
 
-        if not rows:
-            return pd.DataFrame()
+        if not rows: return pd.DataFrame()
 
         df = pd.DataFrame(rows, columns=headers)
-        df.rename(columns={'': 'Boxscore'}, inplace=True)
         return df
-
     except Exception as e:
         print(f"❌ Could not process Schedule: {e}")
         return pd.DataFrame()

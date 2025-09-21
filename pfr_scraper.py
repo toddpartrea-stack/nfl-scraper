@@ -66,11 +66,30 @@ def scrape_box_score(box_score_url):
         response = requests.get(box_score_url)
         response.raise_for_status()
         soup = BeautifulSoup(response.text.replace('', ''), 'html.parser')
+
         scorebox = soup.find('div', class_='scorebox')
         away_score = scorebox.find('div', class_='scores away').text.strip()
         home_score = scorebox.find('div', class_='scores home').text.strip()
         final_score = f"{away_score}-{home_score}"
-        return {"final_score": final_score}
+
+        player_offense_table = soup.find('table', id='player_offense')
+        if player_offense_table is None:
+             return {"final_score": final_score, "player_stats": pd.DataFrame()}
+        
+        stats_df = pd.read_html(io.StringIO(str(player_offense_table)))[0]
+        stats_df.columns = ['_'.join(col).strip() for col in stats_df.columns]
+        stats_df = stats_df[stats_df['Player_Player'] != 'Player'].copy()
+        
+        key_stats = {
+            'Player_Player': 'Player', 'Passing_Cmp': 'PassCmp', 'Passing_Att': 'PassAtt',
+            'Passing_Yds': 'PassYds', 'Passing_TD': 'PassTD', 'Rushing_Att': 'RushAtt',
+            'Rushing_Yds': 'RushYds', 'Rushing_TD': 'RushTD', 'Receiving_Tgt': 'RecTgt',
+            'Receiving_Rec': 'Rec', 'Receiving_Yds': 'RecYds', 'Receiving_TD': 'RecTD'
+        }
+        cols_to_keep = [col for col in key_stats.keys() if col in stats_df.columns]
+        final_stats_df = stats_df[cols_to_keep].rename(columns=key_stats)
+        
+        return {"final_score": final_score, "player_stats": final_stats_df}
     except Exception as e:
         print(f"    -> An error occurred scraping the box score: {e}")
         return None
@@ -81,22 +100,12 @@ if __name__ == "__main__":
     gc = get_gspread_client()
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
 
-    print("\n--- Scraping TeamRankings.com Power Rankings ---")
+    print("\n--- Scraping PFR SCHEDULE ---")
     try:
-        url = "https://www.teamrankings.com/nfl/rankings/teams/"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        rankings_df = pd.read_html(url, header=0)[0]
-        write_to_sheet(spreadsheet, "Power_Rankings", rankings_df)
+        schedule_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/games.htm")[0]
+        write_to_sheet(spreadsheet, "Schedule", clean_pfr_table(schedule_df))
     except Exception as e:
-        print(f"❌ Could not process TeamRankings Stats: {e}")
-    
-    print("\n--- Scraping PFR DEFENSE ---")
-    try:
-        url = f"https://www.pro-football-reference.com/years/{YEAR}/opp.htm"
-        defense_df = pd.read_html(url)[0]
-        write_to_sheet(spreadsheet, "D_Overall", clean_pfr_table(defense_df))
-    except Exception as e:
-        print(f"❌ Could not process Defensive Stats: {e}")
+        print(f"❌ Could not process Schedule: {e}")
 
     print("\n--- Scraping PFR TEAM OFFENSE ---")
     try:
@@ -113,24 +122,6 @@ if __name__ == "__main__":
             print("❌ Could not find the Team Offense table by looking for the 'PF' column.")
     except Exception as e: 
         print(f"❌ Could not process Team Offensive Stats: {e}")
-    
-    print("\n--- Scraping PFR PLAYER OFFENSE ---")
-    try:
-        passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]
-        rushing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/rushing.htm")[0]
-        receiving_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/receiving.htm")[0]
-        write_to_sheet(spreadsheet, "O_Player_Passing", clean_pfr_table(passing_df))
-        write_to_sheet(spreadsheet, "O_Player_Rushing", clean_pfr_table(rushing_df))
-        write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
-    except Exception as e:
-        print(f"❌ Could not process Player Offensive Stats: {e}")
-
-    print("\n--- Scraping PFR SCHEDULE ---")
-    try:
-        schedule_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/games.htm")[0]
-        write_to_sheet(spreadsheet, "Schedule", clean_pfr_table(schedule_df))
-    except Exception as e:
-        print(f"❌ Could not process Schedule: {e}")
 
     print("\n--- Scraping FootballGuys.com Depth Charts (with Status) ---")
     try:

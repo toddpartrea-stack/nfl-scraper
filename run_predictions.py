@@ -156,26 +156,25 @@ def main():
             df['Team_Abbr'] = df['Team_Full'].map(full_name_to_abbr)
             print(f"  -> Standardized team names for '{name}' sheet.")
 
-    print("\nDetermining current week with Wednesday rollover...")
+    print("\nDetermining current week...")
     today = date.today()
     schedule_df = dataframes['Schedule']
     
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
     schedule_df.dropna(subset=['Week'], inplace=True)
     if schedule_df.empty:
-        print("Error: No valid week data found in Schedule tab. Exiting.")
+        print("Error: No valid week data in Schedule tab. Exiting.")
         return
     schedule_df['Week'] = schedule_df['Week'].astype(int)
     
     schedule_df['game_date'] = pd.to_datetime(schedule_df['Date'] + " " + str(YEAR), errors='coerce').dt.date
     schedule_df.dropna(subset=['game_date'], inplace=True)
 
-    if today.weekday() >= 2: # Wednesday or later
-        future_games = schedule_df[schedule_df['game_date'] >= today]
-        current_week = int(future_games['Week'].min()) if not future_games.empty else int(schedule_df['Week'].max())
-    else: # Sunday, Monday, or Tuesday
-        past_or_present_games = schedule_df[schedule_df['game_date'] <= today]
-        current_week = int(past_or_present_games['Week'].max()) if not past_or_present_games.empty else 1
+    past_or_present_games = schedule_df[schedule_df['game_date'] <= today]
+    if not past_or_present_games.empty:
+        current_week = int(past_or_present_games['Week'].max())
+    else:
+        current_week = 1
     print(f"  -> Current NFL week is: {current_week}")
 
     sheet_name = f"Week_{current_week}_Predictions"
@@ -199,7 +198,7 @@ def main():
     
     all_player_stats_2025 = pd.concat([dataframes.get('O_Player_Passing', pd.DataFrame()), dataframes.get('O_Player_Rushing', pd.DataFrame()), dataframes.get('O_Player_Receiving', pd.DataFrame())], ignore_index=True)
     all_player_stats_2024 = pd.concat([dataframes.get('2024_O_Player_Passing', pd.DataFrame()), dataframes.get('2024_O_Player_Rushing', pd.DataFrame()), dataframes.get('2024_O_Player_Receiving', pd.DataFrame())], ignore_index=True)
-    
+
     for index, game in this_weeks_games.iterrows():
         home_team_full = game['Loser/tie'] if game['At'] == '@' else game['Winner/tie']
         away_team_full = game['Winner/tie'] if game['At'] == '@' else game['Loser/tie']
@@ -229,16 +228,14 @@ def main():
             Analyze the provided data for both the current ({YEAR}) and previous ({YEAR-1}) seasons to identify trends.
             If a player has all zero stats, it means they are likely a rookie or have not recorded stats this season.
 
-            ---
             ## {home_team_full} (Home) Active Player Stats
             - Current Season ({YEAR}): {home_roster.to_string()}
             - Previous Season ({YEAR-1}): {home_hist.to_string()}
-            ---
             ## {away_team_full} (Away) Active Player Stats
             - Current Season ({YEAR}): {away_roster.to_string()}
             - Previous Season ({YEAR-1}): {away_hist.to_string()}
             ---
-            Based on a comprehensive analysis of both seasons, provide the following in a clear format:
+            Based on a comprehensive analysis, provide the following in a clear format:
             1. **Game Prediction:** Predicted Winner and Predicted Final Score.
             2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
             3. **Justification:** A brief justification for your overall prediction, referencing year-over-year trends if relevant.

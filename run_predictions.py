@@ -201,8 +201,11 @@ def main():
     all_player_stats_2024 = pd.concat([dataframes.get('2024_O_Player_Passing', pd.DataFrame()), dataframes.get('2024_O_Player_Rushing', pd.DataFrame()), dataframes.get('2024_O_Player_Receiving', pd.DataFrame())], ignore_index=True)
 
     for index, game in this_weeks_games.iterrows():
-        away_team_full = game['Winner/tie']
-        home_team_full = game['Loser/tie']
+        game_date = game['game_date']
+        
+        # This is a more robust way to determine home and away teams
+        home_team_full = game['Loser/tie'] if game['Unnamed: 5'] == '@' else game['Winner/tie']
+        away_team_full = game['Winner/tie'] if game['Unnamed: 5'] == '@' else game['Loser/tie']
         game_date = game['game_date']
         kickoff_str = game['Date']
         boxscore_link_col = next((c for c in game.index if 'Boxscore' in c), None)
@@ -276,9 +279,15 @@ def main():
                      
                      player_stats_df = box_score_data.get("player_stats")
                      if player_stats_df is not None and not player_stats_df.empty:
-                         key_players_stats = player_stats_df[(pd.to_numeric(player_stats_df.get('PassYds', 0), errors='coerce').fillna(0) > 50) | (pd.to_numeric(player_stats_df.get('RushYds', 0), errors='coerce').fillna(0) > 20) | (pd.to_numeric(player_stats_df.get('RecYds', 0), errors='coerce').fillna(0) > 30)]
+                         # Filter for players with significant stats to keep the output clean
+                         key_players_stats = player_stats_df[
+                             (pd.to_numeric(player_stats_df.get('PassYds', 0), errors='coerce').fillna(0) > 0) |
+                             (pd.to_numeric(player_stats_df.get('RushYds', 0), errors='coerce').fillna(0) > 0) |
+                             (pd.to_numeric(player_stats_df.get('RecYds', 0), errors='coerce').fillna(0) > 0)
+                         ]
                          stats_string = key_players_stats.to_string(index=False)
                          worksheet.update(f'I{row_num}', [[stats_string]])
+                         
                      print(f"    -> Updated actuals for {away_team_full} at {home_team_full}")
             else:
                 print(f"    -> Box score link not found for this game.")

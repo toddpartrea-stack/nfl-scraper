@@ -1,13 +1,12 @@
 import google.generativeai as genai
 import gspread
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 import re
 import os
 import pickle
-# Make sure your pfr_scraper.py file is in the same directory
-from pfr_scraper import scrape_box_score 
+from pfr_scraper import scrape_box_score
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 
@@ -46,7 +45,7 @@ def get_out_players_set(depth_chart_df):
     return {normalize_player_name(name) for name in out_players_df['Player']}
 
 def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out_players_set, pos_config):
-    player_col = next((c for c in ['Player', 'Unnamed: 1_level_0_Player'] if c in stats_df.columns), None)
+    player_col = next((c for c in stats_df.columns if 'Player' in c), None)
     if not player_col: return pd.DataFrame()
 
     team_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == team_full_name].copy()
@@ -80,7 +79,7 @@ def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out
     merged_df['Team_Abbr'] = merged_df['Team_Abbr'].fillna(team_abbr)
 
     final_columns = ['Player', 'Team_Abbr', 'Pos']
-    stat_cols_to_add = [c for c in stats_df.columns if c not in ['Player', 'Player_Normalized', 'Team_Abbr', 'Pos', 'Tm']]
+    stat_cols_to_add = [c for c in stats_df.columns if c not in ['Player', 'Player_Normalized', 'Team_Abbr', 'Pos', 'Tm', 'Player_x', 'Player_y', 'Pos_x', 'Pos_y']]
     final_columns.extend(stat_cols_to_add)
     final_columns_exist = [c for c in final_columns if c in merged_df.columns]
     
@@ -89,7 +88,6 @@ def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out
 def hide_data_sheets(spreadsheet):
     print("\n--- Cleaning up spreadsheet visibility ---")
     sheets = spreadsheet.worksheets()
-    # Don't hide the very first sheet (index 0), as it's required to be visible
     for sheet in sheets[1:]:
         if not sheet.title.startswith("Week_"):
             try:
@@ -106,7 +104,6 @@ def main():
     gc = get_gspread_client()
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
 
-    # Load all data from the spreadsheet
     dataframes = {}
     print("\nLoading data from Google Sheet tabs...")
     for worksheet in spreadsheet.worksheets():
@@ -117,7 +114,6 @@ def main():
                 dataframes[title] = pd.DataFrame(data[1:], columns=data[0])
                 print(f"  -> Loaded data tab: {title}")
 
-    # Build Master Maps from your Rosetta Stone
     print("\nBuilding team name master map from 'team_match' sheet...")
     team_map_df = dataframes['team_match']
     master_team_map, full_name_to_abbr = {}, {}
@@ -127,7 +123,6 @@ def main():
             if row[col]: master_team_map[row[col]] = full_name
         if full_name and abbr: full_name_to_abbr[full_name] = abbr
     
-    # Standardize All DataFrames
     print("\nStandardizing team names across all data sheets...")
     possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm', 'Unnamed: 3_level_0_Team']
     for name, df in dataframes.items():
@@ -138,109 +133,105 @@ def main():
             df['Team_Abbr'] = df['Team_Full'].map(full_name_to_abbr)
             print(f"  -> Standardized team names for '{name}' sheet.")
 
-    # Determine the "current week" based on the "Wednesday Rollover"
     print("\nDetermining current week with Wednesday rollover...")
     now = datetime.now()
     schedule_df = dataframes['Schedule']
     
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
     schedule_df.dropna(subset=['Week'], inplace=True)
+    if schedule_df.empty:
+        print("Error: No valid week data found in Schedule tab. Exiting.")
+        return
     schedule_df['Week'] = schedule_df['Week'].astype(int)
+    
+    schedule_df['datetime'] = pd.to_datetime(schedule_df['Date'] + " " + YEAR, errors='coerce')
 
-    schedule_df['datetime'] = pd.to_datetime(schedule_df['Date'] + ' ' + schedule_df['Time'].fillna('0:00AM').str.replace('p', ' PM').str.replace('a', ' AM'), format='%B %d %I:%M %p', errors='coerce')
-    schedule_df['datetime'] = schedule_df['datetime'].apply(lambda dt: dt.replace(year=YEAR) if pd.notnull(dt) else None)
-    schedule_df.dropna(subset=['datetime'], inplace=True)
-
-    if now.weekday() >= 2 and now.hour >= 6: # Wednesday (2) at 6 AM or later
+    if now.weekday() >= 2 and now.hour >= 6:
         future_games = schedule_df[schedule_df['datetime'] > now]
         current_week = int(future_games['Week'].min()) if not future_games.empty else int(schedule_df['Week'].max())
     else:
         past_games = schedule_df[schedule_df['datetime'] <= now]
         current_week = int(past_games['Week'].max()) if not past_games.empty else 1
-    
     print(f"  -> Current NFL week is: {current_week}")
 
-    # Get/Create the prediction sheet for the current week
     sheet_name = f"Week_{current_week}_Predictions"
     try:
         worksheet = spreadsheet.worksheet(sheet_name)
-        print(f"Found existing sheet: '{sheet_name}'")
     except gspread.WorksheetNotFound:
         headers = ["Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", "Actual Winner", "Actual Score", "Prediction Details"]
         worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1, cols=len(headers))
         worksheet.update([headers], 'A1')
-        print(f"Created new sheet: '{sheet_name}'")
 
-    # Get all games for the current week
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
     print(f"\nFound {len(this_weeks_games)} games for Week {current_week}. Starting analysis...")
 
-    # Configure Gemini API
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel('gemini-1.5-flash')
     print("\n✅ Gemini API configured.")
     
-    # Get shared dataframes
     depth_chart_df = dataframes['Depth_Charts']
     depth_chart_df['Depth'] = pd.to_numeric(depth_chart_df['Depth'], errors='coerce')
     out_players_set = get_out_players_set(depth_chart_df)
     all_player_stats = pd.concat([dataframes['O_Player_Passing'], dataframes['O_Player_Rushing'], dataframes['O_Player_Receiving']], ignore_index=True)
     team_defense_data = dataframes['D_Overall']
 
-    # --- MAIN GAME LOOP ---
     for index, game in this_weeks_games.iterrows():
         away_team_full = game['Winner/tie']
         home_team_full = game['Loser/tie']
         kickoff_time = game['datetime']
-        boxscore_link = "https://www.pro-football-reference.com" + game.get('Boxscore', '')
-
+        boxscore_link = game.get('Unnamed: 7', '')
+        
         print(f"\n--- Processing Matchup: {away_team_full} at {home_team_full} ---")
 
-        # Find or create the row for this game
-        cell = worksheet.find(away_team_full)
-        row_num = None
-        if cell and worksheet.cell(cell.row, 2).value == home_team_full:
-             row_num = cell.row
-        else:
-             worksheet.append_row([away_team_full, home_team_full, kickoff_time.strftime('%Y-%m-%d %H:%M:%S')])
-             row_num = len(worksheet.get_all_values())
+        all_sheet_data = worksheet.get_all_values()
+        row_num = -1
+        for i, row in enumerate(all_sheet_data):
+            if row[0] == away_team_full and row[1] == home_team_full:
+                row_num = i + 1
+                break
+        if row_num == -1:
+             worksheet.append_row([away_team_full, home_team_full, kickoff_time.strftime('%Y-%m-%d %H:%M:%S') if pd.notnull(kickoff_time) else ""])
+             row_num = len(all_sheet_data) + 1
 
-        # Check game status
         if kickoff_time > now:
             print(f"  -> Predicting future game...")
-            # Build game-day roster and prompt
             home_team_abbr = full_name_to_abbr.get(home_team_full)
             away_team_abbr = full_name_to_abbr.get(away_team_full)
             pos_config = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1}
             home_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, all_player_stats, out_players_set, pos_config)
             away_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, all_player_stats, out_players_set, pos_config)
             
-            matchup_prompt = f"Predict the {away_team_full} at {home_team_full} game. Home offense: {home_roster.to_string()}. Away offense: {away_roster.to_string()}." # A full prompt would be here
+            matchup_prompt = f"Predict the {away_team_full} at {home_team_full} game. Home offense: {home_roster.to_string()}. Away offense: {away_roster.to_string()}." # This should be your full, detailed prompt
             
             try:
                 response = model.generate_content(matchup_prompt)
                 details = response.text
-                winner_match = re.search(r"Winner:\s*(.*)", details)
-                score_match = re.search(r"Score:\s*(.*)", details)
+                winner_match = re.search(r"\*?\*?Predicted Winner:\*?\*?\s*(.*)", details)
+                score_match = re.search(r"\*?\*?Predicted Final Score:\*?\*?\s*(.*)", details)
                 winner = winner_match.group(1).strip() if winner_match else "See Details"
                 score = score_match.group(1).strip() if score_match else "See Details"
                 worksheet.update(f'D{row_num}:E{row_num}', [[winner, score]])
                 worksheet.update(f'H{row_num}', [[details]])
+                print(f"    -> Wrote prediction for {away_team_full} at {home_team_full}")
             except Exception as e:
                 print(f"    -> Could not generate prediction: {e}")
 
         else:
             print(f"  -> Analyzing completed game...")
-            box_score_data = scrape_box_score(boxscore_link)
-            if box_score_data:
-                 actual_winner = game['Winner/tie']
-                 actual_score = box_score_data['final_score']
-                 worksheet.update(f'F{row_num}:G{row_num}', [[actual_winner, actual_score]])
-                 print(f"    -> Updated actuals for {away_team_full} at {home_team_full}")
+            if boxscore_link and 'boxscores' in boxscore_link:
+                full_boxscore_url = "https://www.pro-football-reference.com" + boxscore_link
+                box_score_data = scrape_box_score(full_boxscore_url)
+                if box_score_data:
+                     actual_winner = game['Winner/tie']
+                     actual_score = box_score_data['final_score']
+                     worksheet.update(f'F{row_num}:G{row_num}', [[actual_winner, actual_score]])
+                     print(f"    -> Updated actuals for {away_team_full} at {home_team_full}")
+                else:
+                     print(f"    -> Could not retrieve actuals for {away_team_full} at {home_team_full}")
             else:
-                 print(f"    -> Could not retrieve actuals for {away_team_full} at {home_team_full}")
+                print(f"    -> Box score link not found for this game.")
             
-        time.sleep(5)
+        time.sleep(10)
 
     hide_data_sheets(spreadsheet)
     print("\n✅ Prediction script finished.")

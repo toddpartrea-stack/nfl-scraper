@@ -1,4 +1,3 @@
-# pfr_scraper.py (COMPLETE TEMPORARY VERSION FOR 2024 SCRAPE)
 import requests
 import pandas as pd
 import gspread
@@ -14,7 +13,7 @@ import re
 
 # --- CONFIGURATION ---
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
-YEAR = 2025 
+YEAR = 2025
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # --- Google Sheets Authentication ---
@@ -66,7 +65,7 @@ if __name__ == "__main__":
     gc = get_gspread_client()
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
 
-print("\n--- Scraping TeamRankings.com Power Rankings ---")
+    print("\n--- Scraping TeamRankings.com Power Rankings ---")
     try:
         url = "https://www.teamrankings.com/nfl/rankings/teams/"
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -101,7 +100,7 @@ print("\n--- Scraping TeamRankings.com Power Rankings ---")
         write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
     except Exception as e: print(f"❌ Could not process Player Offensive Stats: {e}")
 
-  print("\n--- Scraping CBS Sports INJURIES ---")
+    print("\n--- Scraping CBS Sports INJURIES ---")
     try:
         url = "https://www.cbssports.com/nfl/injuries/"
         headers = {'User-Agent': 'Mozilla/5.0'}

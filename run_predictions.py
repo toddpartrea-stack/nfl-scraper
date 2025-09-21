@@ -157,7 +157,7 @@ def main():
             print(f"  -> Standardized team names for '{name}' sheet.")
 
     print("\nDetermining current week with Wednesday rollover...")
-    now = datetime.now()
+    today = datetime.now().date()
     schedule_df = dataframes['Schedule']
     
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
@@ -167,19 +167,15 @@ def main():
         return
     schedule_df['Week'] = schedule_df['Week'].astype(int)
     
-    # Correctly parse date and time together
-    schedule_df['datetime'] = pd.to_datetime(
-        schedule_df['Date'] + ' ' + str(YEAR) + ' ' + schedule_df['Time'].fillna('1:00PM').str.replace('p', ' PM').str.replace('a', ' AM'), 
-        errors='coerce'
-    )
-    schedule_df.dropna(subset=['datetime'], inplace=True)
+    schedule_df['game_date'] = pd.to_datetime(schedule_df['Date'] + " " + str(YEAR), errors='coerce').dt.date
+    schedule_df.dropna(subset=['game_date'], inplace=True)
 
-    if now.weekday() >= 2 and now.hour >= 6:
-        future_games = schedule_df[schedule_df['datetime'] > now]
+    if today.weekday() >= 2: # Wednesday or later
+        future_games = schedule_df[schedule_df['game_date'] > today]
         current_week = int(future_games['Week'].min()) if not future_games.empty else int(schedule_df['Week'].max())
-    else:
-        past_games = schedule_df[schedule_df['datetime'] <= now]
-        current_week = int(past_games['Week'].max()) if not past_games.empty else 1
+    else: # Sunday, Monday, or Tuesday
+        past_or_present_games = schedule_df[schedule_df['game_date'] <= today]
+        current_week = int(past_or_present_games['Week'].max()) if not past_or_present_games.empty else 1
     print(f"  -> Current NFL week is: {current_week}")
 
     sheet_name = f"Week_{current_week}_Predictions"
@@ -207,15 +203,16 @@ def main():
     for index, game in this_weeks_games.iterrows():
         away_team_full = game['Winner/tie']
         home_team_full = game['Loser/tie']
-        kickoff_time = game['datetime']
+        game_date = game['game_date']
+        kickoff_str = game['Date']
         boxscore_link_col = next((c for c in game.index if 'Boxscore' in c), None)
         boxscore_link = game.get(boxscore_link_col, '') if boxscore_link_col else ''
         
         print(f"\n--- Processing Matchup: {away_team_full} at {home_team_full} ---")
 
-        row_num = find_or_create_row(worksheet, away_team_full, home_team_full, kickoff_time.strftime('%Y-%m-%d %H:%M:%S') if pd.notnull(kickoff_time) else "")
+        row_num = find_or_create_row(worksheet, away_team_full, home_team_full, kickoff_str)
 
-        if kickoff_time > now:
+        if game_date >= today:
             print(f"  -> Predicting future game...")
             home_team_abbr, away_team_abbr = full_name_to_abbr.get(home_team_full), full_name_to_abbr.get(away_team_full)
             pos_config = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1}
@@ -226,7 +223,9 @@ def main():
             
             home_team_off_2025 = dataframes['O_Team_Overall'][dataframes['O_Team_Overall']['Team_Full'] == home_team_full]
             away_team_off_2025 = dataframes['O_Team_Overall'][dataframes['O_Team_Overall']['Team_Full'] == away_team_full]
-            
+            home_team_def_2025 = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'] == home_team_full]
+            away_team_def_2025 = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'] == away_team_full]
+
             matchup_prompt = f"""
             Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
             Analyze the provided data for both the current ({YEAR}) and previous ({YEAR-1}) seasons to identify trends.
@@ -274,6 +273,7 @@ def main():
                      actual_winner = game['Winner/tie']
                      actual_score = box_score_data['final_score']
                      worksheet.update(f'F{row_num}:G{row_num}', [[actual_winner, actual_score]])
+                     
                      player_stats_df = box_score_data.get("player_stats")
                      if player_stats_df is not None and not player_stats_df.empty:
                          key_players_stats = player_stats_df[(pd.to_numeric(player_stats_df.get('PassYds', 0), errors='coerce').fillna(0) > 50) | (pd.to_numeric(player_stats_df.get('RushYds', 0), errors='coerce').fillna(0) > 20) | (pd.to_numeric(player_stats_df.get('RecYds', 0), errors='coerce').fillna(0) > 30)]

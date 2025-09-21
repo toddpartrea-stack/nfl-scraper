@@ -6,7 +6,6 @@ on:
   schedule:
     # Runs daily at 14:00 UTC (10 AM EDT)
     - cron: '0 14 * * *'
-  workflow_dispatch: # Allows you to run it manually
 
 jobs:
   run-pipeline:

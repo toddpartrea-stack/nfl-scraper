@@ -153,9 +153,10 @@ def main():
             df.columns = ['_'.join(col).strip() for col in df.columns.values]
         team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
         if team_col_found:
-            # This new logic uses the original name as a fallback instead of dropping the row
+            # --- FRANCO: THIS IS THE FINAL FIX ---
+            # This logic now keeps the original name if a match isn't found, preventing rows from being dropped.
             df['Team_Full'] = df[team_col_found].map(master_team_map).fillna(df[team_col_found])
-            df.dropna(subset=['Team_Full'], inplace=True) # This now only drops rows that were originally blank
+            df.dropna(subset=['Team_Full'], inplace=True)
             df['Team_Abbr'] = df['Team_Full'].map(full_name_to_abbr)
             print(f"  -> Standardized team names for '{name}' sheet.")
 
@@ -205,8 +206,7 @@ def main():
 
         if game_date >= today:
             print(f"  -> Predicting future game...")
-            home_team_abbr = full_name_to_abbr.get(home_team_full)
-            away_team_abbr = full_name_to_abbr.get(away_team_full)
+            home_team_abbr, away_team_abbr = full_name_to_abbr.get(home_team_full), full_name_to_abbr.get(away_team_full)
             pos_config = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1}
             home_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
             away_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
@@ -230,7 +230,7 @@ def main():
             - Current Season ({YEAR}): {away_roster.to_string()}
             - Previous Season ({YEAR-1}): {away_hist.to_string()}
             ---
-            Based on a comprehensive analysis of both seasons, provide the following in a clear format:
+            Based on a comprehensive analysis, provide the following in a clear format:
             1. **Game Prediction:** Predicted Winner and Predicted Final Score.
             2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
             3. **Justification:** A brief justification for your overall prediction, referencing year-over-year trends if relevant.

@@ -111,7 +111,6 @@ def scrape_schedule(year):
         for row in table.find('tbody').find_all('tr'):
             if row.find('th', class_='thead'): continue
             
-            # Use data-stat attributes for precise data extraction
             week = row.find('th', {'data-stat': 'week_num'}).text
             day = row.find('td', {'data-stat': 'game_day_of_week'}).text
             date = row.find('td', {'data-stat': 'game_date'}).text
@@ -140,5 +139,21 @@ if __name__ == "__main__":
     schedule_df = scrape_schedule(YEAR)
     if not schedule_df.empty:
         write_to_sheet(spreadsheet, "Schedule", schedule_df)
+
+    print("\n--- Scraping PFR TEAM OFFENSE ---")
+    try:
+        url = f"https://www.pro-football-reference.com/years/{YEAR}/"
+        all_tables = pd.read_html(url)
+        team_offense_df = None
+        for table in all_tables:
+            if 'PF' in table.columns:
+                team_offense_df = table
+                break
+        if team_offense_df is not None:
+            write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
+        else:
+            print("❌ Could not find the Team Offense table.")
+    except Exception as e: 
+        print(f"❌ Could not process Team Offensive Stats: {e}")
 
     print("\n✅ Scraper script finished.")

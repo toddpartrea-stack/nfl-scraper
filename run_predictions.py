@@ -85,6 +85,20 @@ def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out
     
     return merged_df[final_columns_exist]
 
+def get_historical_stats(current_roster_df, team_abbr, historical_df):
+    if historical_df.empty or current_roster_df.empty: return pd.DataFrame()
+    player_col_hist = next((c for c in historical_df.columns if 'Player' in c), None)
+    player_col_curr = next((c for c in current_roster_df.columns if 'Player' in c), None)
+    if not player_col_hist or not player_col_curr: return pd.DataFrame()
+
+    historical_df['Player_Normalized'] = historical_df[player_col_hist].apply(normalize_player_name)
+    current_roster_df['Player_Normalized'] = current_roster_df[player_col_curr].apply(normalize_player_name)
+    active_players_normalized = list(current_roster_df['Player_Normalized'])
+    historical_roster = historical_df[historical_df['Player_Normalized'].isin(active_players_normalized)].copy()
+    if 'Team_Abbr' in historical_roster.columns: historical_roster['Team_Abbr'] = team_abbr
+    if 'Tm' in historical_roster.columns: historical_roster['Tm'] = team_abbr
+    return historical_roster.drop(columns=['Player_Normalized'], errors='ignore')
+
 def hide_data_sheets(spreadsheet):
     print("\n--- Cleaning up spreadsheet visibility ---")
     sheets = spreadsheet.worksheets()
@@ -101,7 +115,7 @@ def hide_data_sheets(spreadsheet):
 
 def find_or_create_row(worksheet, away_team, home_team, kickoff_str):
     all_sheet_data = worksheet.get_all_values()
-    for i, row in enumerate(all_sheet_data[1:], start=2): # Start from row 2
+    for i, row in enumerate(all_sheet_data[1:], start=2):
         if row and len(row) > 1 and row[0] == away_team and row[1] == home_team:
             return i
     worksheet.append_row([away_team, home_team, kickoff_str])
@@ -153,8 +167,12 @@ def main():
         return
     schedule_df['Week'] = schedule_df['Week'].astype(int)
     
-    schedule_df['datetime_str'] = schedule_df['Date'] + " " + str(YEAR)
-    schedule_df['datetime'] = pd.to_datetime(schedule_df['datetime_str'], errors='coerce')
+    # Correctly parse date and time together
+    schedule_df['datetime'] = pd.to_datetime(
+        schedule_df['Date'] + ' ' + str(YEAR) + ' ' + schedule_df['Time'].fillna('1:00PM').str.replace('p', ' PM').str.replace('a', ' AM'), 
+        errors='coerce'
+    )
+    schedule_df.dropna(subset=['datetime'], inplace=True)
 
     if now.weekday() >= 2 and now.hour >= 6:
         future_games = schedule_df[schedule_df['datetime'] > now]
@@ -184,7 +202,8 @@ def main():
     out_players_set = get_out_players_set(depth_chart_df)
     
     all_player_stats_2025 = pd.concat([dataframes.get('O_Player_Passing', pd.DataFrame()), dataframes.get('O_Player_Rushing', pd.DataFrame()), dataframes.get('O_Player_Receiving', pd.DataFrame())], ignore_index=True)
-    
+    all_player_stats_2024 = pd.concat([dataframes.get('2024_O_Player_Passing', pd.DataFrame()), dataframes.get('2024_O_Player_Rushing', pd.DataFrame()), dataframes.get('2024_O_Player_Receiving', pd.DataFrame())], ignore_index=True)
+
     for index, game in this_weeks_games.iterrows():
         away_team_full = game['Winner/tie']
         home_team_full = game['Loser/tie']
@@ -202,9 +221,37 @@ def main():
             pos_config = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1}
             home_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
             away_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
+            home_hist = get_historical_stats(home_roster, home_team_abbr, all_player_stats_2024)
+            away_hist = get_historical_stats(away_roster, away_team_abbr, all_player_stats_2024)
             
-            matchup_prompt = f"Predict the outcome for {away_team_full} at {home_team_full}. Home Roster: {home_roster.to_string()}. Away Roster: {away_roster.to_string()}" # This should be the full, detailed prompt
+            home_team_off_2025 = dataframes['O_Team_Overall'][dataframes['O_Team_Overall']['Team_Full'] == home_team_full]
+            away_team_off_2025 = dataframes['O_Team_Overall'][dataframes['O_Team_Overall']['Team_Full'] == away_team_full]
+            
+            matchup_prompt = f"""
+            Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
+            Analyze the provided data for both the current ({YEAR}) and previous ({YEAR-1}) seasons to identify trends.
+            If a player has all zero stats, it means they are likely a rookie or have not recorded stats this season.
 
+            ---
+            ## {home_team_full} (Home) Active Player Stats
+            - Current Season ({YEAR}): {home_roster.to_string()}
+            - Previous Season ({YEAR-1}): {home_hist.to_string()}
+            ---
+            ## {away_team_full} (Away) Active Player Stats
+            - Current Season ({YEAR}): {away_roster.to_string()}
+            - Previous Season ({YEAR-1}): {away_hist.to_string()}
+            ---
+            Based on a comprehensive analysis of both seasons, provide the following in a clear format:
+            1. **Game Prediction:** Predicted Winner and Predicted Final Score.
+            2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
+            3. **Justification:** A brief justification for your overall prediction, referencing year-over-year trends if relevant.
+            4. **Key Player Stat Predictions:** For the starting QB, RB, and top WR for each team, provide predictions for their key stats. Format each player on a new line, with each stat on its own line underneath. Include a confidence percentage for each stat prediction. For example:
+               CHI RB Khalil Herbert
+               Rushing Yards: 75 - 80% confidence
+               Receiving Yards: 15 - 60% confidence
+            5. **Touchdown Scorers:** List 2-3 players most likely to score a **rushing or receiving** touchdown. Do not include quarterbacks for passing touchdowns. Provide a confidence percentage from 1% to 100% for each player.
+            """
+            
             try:
                 response = model.generate_content(matchup_prompt)
                 details = response.text
@@ -227,7 +274,11 @@ def main():
                      actual_winner = game['Winner/tie']
                      actual_score = box_score_data['final_score']
                      worksheet.update(f'F{row_num}:G{row_num}', [[actual_winner, actual_score]])
-                     # You could add logic here to write actual player stats
+                     player_stats_df = box_score_data.get("player_stats")
+                     if player_stats_df is not None and not player_stats_df.empty:
+                         key_players_stats = player_stats_df[(pd.to_numeric(player_stats_df.get('PassYds', 0), errors='coerce').fillna(0) > 50) | (pd.to_numeric(player_stats_df.get('RushYds', 0), errors='coerce').fillna(0) > 20) | (pd.to_numeric(player_stats_df.get('RecYds', 0), errors='coerce').fillna(0) > 30)]
+                         stats_string = key_players_stats.to_string(index=False)
+                         worksheet.update(f'I{row_num}', [[stats_string]])
                      print(f"    -> Updated actuals for {away_team_full} at {home_team_full}")
             else:
                 print(f"    -> Box score link not found for this game.")

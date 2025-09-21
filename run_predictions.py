@@ -204,7 +204,7 @@ def main():
         game_date = game['game_date']
         
         # This is a more robust way to determine home and away teams
-        home_team_full = game['Loser/tie'] if game['Unnamed: 5'] == '@' else game['Winner/tie']
+        home_team_full = game['Loser/tie'] if game[''] == '@' else game['Winner/tie']
         away_team_full = game['Winner/tie'] if game['Unnamed: 5'] == '@' else game['Loser/tie']
         game_date = game['game_date']
         kickoff_str = game['Date']

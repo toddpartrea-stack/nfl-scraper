@@ -147,7 +147,7 @@ def main():
         if full_name and abbr: full_name_to_abbr[full_name] = abbr
     
     print("\nStandardizing team names across all data sheets...")
-    possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm', 'Unnamed: 3_level_0_Team']
+    possible_team_cols = ['Tm', 'Team', 'Winner/tie', 'Loser/tie', 'Unnamed: 1_level_0_Tm', 'Unnamed: 3_level_0_Team', 'At', 'Boxscore']
     for name, df in dataframes.items():
         team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
         if team_col_found:
@@ -171,7 +171,7 @@ def main():
     schedule_df.dropna(subset=['game_date'], inplace=True)
 
     if today.weekday() >= 2: # Wednesday or later
-        future_games = schedule_df[schedule_df['game_date'] > today]
+        future_games = schedule_df[schedule_df['game_date'] >= today]
         current_week = int(future_games['Week'].min()) if not future_games.empty else int(schedule_df['Week'].max())
     else: # Sunday, Monday, or Tuesday
         past_or_present_games = schedule_df[schedule_df['game_date'] <= today]
@@ -201,15 +201,11 @@ def main():
     all_player_stats_2024 = pd.concat([dataframes.get('2024_O_Player_Passing', pd.DataFrame()), dataframes.get('2024_O_Player_Rushing', pd.DataFrame()), dataframes.get('2024_O_Player_Receiving', pd.DataFrame())], ignore_index=True)
 
     for index, game in this_weeks_games.iterrows():
-        game_date = game['game_date']
-        
-        # This is a more robust way to determine home and away teams
-        home_team_full = game['Loser/tie'] if game[''] == '@' else game['Winner/tie']
-        away_team_full = game['Winner/tie'] if game['Unnamed: 5'] == '@' else game['Loser/tie']
+        home_team_full = game['Loser/tie'] if game['At'] == '@' else game['Winner/tie']
+        away_team_full = game['Winner/tie'] if game['At'] == '@' else game['Loser/tie']
         game_date = game['game_date']
         kickoff_str = game['Date']
-        boxscore_link_col = next((c for c in game.index if 'Boxscore' in c), None)
-        boxscore_link = game.get(boxscore_link_col, '') if boxscore_link_col else ''
+        boxscore_link = game.get('Boxscore', '')
         
         print(f"\n--- Processing Matchup: {away_team_full} at {home_team_full} ---")
 
@@ -217,7 +213,8 @@ def main():
 
         if game_date >= today:
             print(f"  -> Predicting future game...")
-            home_team_abbr, away_team_abbr = full_name_to_abbr.get(home_team_full), full_name_to_abbr.get(away_team_full)
+            home_team_abbr = full_name_to_abbr.get(home_team_full)
+            away_team_abbr = full_name_to_abbr.get(away_team_full)
             pos_config = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1}
             home_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
             away_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
@@ -226,9 +223,7 @@ def main():
             
             home_team_off_2025 = dataframes['O_Team_Overall'][dataframes['O_Team_Overall']['Team_Full'] == home_team_full]
             away_team_off_2025 = dataframes['O_Team_Overall'][dataframes['O_Team_Overall']['Team_Full'] == away_team_full]
-            home_team_def_2025 = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'] == home_team_full]
-            away_team_def_2025 = dataframes['D_Overall'][dataframes['D_Overall']['Team_Full'] == away_team_full]
-
+            
             matchup_prompt = f"""
             Act as an expert NFL analyst. Your task is to predict the outcome of the {away_team_full} at {home_team_full} game.
             Analyze the provided data for both the current ({YEAR}) and previous ({YEAR-1}) seasons to identify trends.
@@ -279,15 +274,9 @@ def main():
                      
                      player_stats_df = box_score_data.get("player_stats")
                      if player_stats_df is not None and not player_stats_df.empty:
-                         # Filter for players with significant stats to keep the output clean
-                         key_players_stats = player_stats_df[
-                             (pd.to_numeric(player_stats_df.get('PassYds', 0), errors='coerce').fillna(0) > 0) |
-                             (pd.to_numeric(player_stats_df.get('RushYds', 0), errors='coerce').fillna(0) > 0) |
-                             (pd.to_numeric(player_stats_df.get('RecYds', 0), errors='coerce').fillna(0) > 0)
-                         ]
+                         key_players_stats = player_stats_df[(pd.to_numeric(player_stats_df.get('PassYds', 0), errors='coerce').fillna(0) > 50) | (pd.to_numeric(player_stats_df.get('RushYds', 0), errors='coerce').fillna(0) > 20) | (pd.to_numeric(player_stats_df.get('RecYds', 0), errors='coerce').fillna(0) > 30)]
                          stats_string = key_players_stats.to_string(index=False)
                          worksheet.update(f'I{row_num}', [[stats_string]])
-                         
                      print(f"    -> Updated actuals for {away_team_full} at {home_team_full}")
             else:
                 print(f"    -> Box score link not found for this game.")

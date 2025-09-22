@@ -152,13 +152,12 @@ def main():
     for name, df in dataframes.items():
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = ['_'.join(col).strip() for col in df.columns.values]
-        team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
-        if team_col_found:
-            df['Team_Full'] = df[team_col_found].map(master_team_map)
-            df.dropna(subset=['Team_Full'], inplace=True)
-            df['Team_Abbr'] = df['Team_Full'].map(full_name_to_abbr)
-            print(f"  -> Standardized team names for '{name}' sheet.")
-
+        for col in possible_team_cols:
+            if col in df.columns:
+                df['Team_Full'] = df[col].map(master_team_map)
+                df.dropna(subset=['Team_Full'], inplace=True)
+                df['Team_Abbr'] = df['Team_Full'].map(full_name_to_abbr)
+    
     print("\nDetermining current week with Wednesday rollover...")
     eastern_tz = pytz.timezone('US/Eastern')
     now_utc = datetime.now(timezone.utc)
@@ -200,13 +199,13 @@ def main():
     model = genai.GenerativeModel('gemini-1.5-flash')
     print("\n✅ Gemini API configured.")
     
-    depth_chart_df = dataframes['Depth_Charts']
-    depth_chart_df['Depth'] = pd.to_numeric(depth_chart_df['Depth'], errors='coerce')
+    depth_chart_df = dataframes.get('Depth_Charts', pd.DataFrame())
+    if not depth_chart_df.empty:
+        depth_chart_df['Depth'] = pd.to_numeric(depth_chart_df['Depth'], errors='coerce')
     out_players_set = get_out_players_set(depth_chart_df)
     
     all_player_stats_2025 = pd.concat([dataframes.get('O_Player_Passing', pd.DataFrame()), dataframes.get('O_Player_Rushing', pd.DataFrame()), dataframes.get('O_Player_Receiving', pd.DataFrame())], ignore_index=True)
-    all_player_stats_2024 = pd.concat([dataframes.get('2024_O_Player_Passing', pd.DataFrame()), dataframes.get('2024_O_Player_Rushing', pd.DataFrame()), dataframes.get('2024_O_Player_Receiving', pd.DataFrame())], ignore_index=True)
-
+    
     for index, game in this_weeks_games.iterrows():
         away_team_full = game['Visitor']
         home_team_full = game['Home']
@@ -223,28 +222,30 @@ def main():
             pos_config = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1}
             home_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
             away_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
-            home_hist = get_historical_stats(home_roster, home_team_abbr, all_player_stats_2024)
-            away_hist = get_historical_stats(away_roster, away_team_abbr, all_player_stats_2024)
             
-            matchup_prompt = f"Predict the {away_team_full} at {home_team_full} game. Home Roster: {home_roster.to_string()}. Away Roster: {away_roster.to_string()}." # Replace with full prompt
+            matchup_prompt = f"Provide a detailed NFL prediction for {away_team_full} at {home_team_full} based on the following active player data:\nHome Roster:\n{home_roster.to_string()}\n\nAway Roster:\n{away_roster.to_string()}"
             
             try:
-                # ... AI call and sheet update logic
-                pass
+                response = model.generate_content(matchup_prompt)
+                details = response.text
+                winner_match = re.search(r"\*?\*?Predicted Winner:\*?\*?\s*(.*)", details)
+                score_match = re.search(r"\*?\*?Predicted Final Score:\*?\*?\s*(.*)", details)
+                winner = winner_match.group(1).strip() if winner_match else "See Details"
+                score = score_match.group(1).strip() if score_match else "See Details"
+                worksheet.update(f'D{row_num}:E{row_num}', [[winner, score]])
+                worksheet.update(f'H{row_num}', [[details]])
+                print(f"    -> Wrote prediction for {away_team_full} at {home_team_full}")
             except Exception as e:
                 print(f"    -> Could not generate prediction: {e}")
-
         else:
             print(f"  -> Analyzing completed game...")
             if boxscore_link and 'boxscores' in boxscore_link:
                 full_boxscore_url = "https://www.pro-football-reference.com" + boxscore_link
                 box_score_data = scrape_box_score(full_boxscore_url)
                 if box_score_data:
-                     # This needs the correct winner from the new schedule format
-                     winner_pts = pd.to_numeric(game.get('VisPts'), errors='coerce').fillna(0)
-                     loser_pts = pd.to_numeric(game.get('HomePts'), errors='coerce').fillna(0)
-                     actual_winner = away_team_full if winner_pts > loser_pts else home_team_full
-                     
+                     # Winner can be derived by points, but PFR provides it in the schedule
+                     winner_team_name = game.get('Winner/tie', '')
+                     actual_winner = full_name_to_abbr.get(winner_team_name, '')
                      actual_score = box_score_data['final_score']
                      worksheet.update(f'F{row_num}:G{row_num}', [[actual_winner, actual_score]])
                      
@@ -259,7 +260,7 @@ def main():
             
         time.sleep(10)
 
-    hide_data_sheets(spreadsheet)
+    # hide_data_sheets(spreadsheet)
     print("\n✅ Prediction script finished.")
 
 if __name__ == "__main__":

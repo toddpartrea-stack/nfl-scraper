@@ -111,7 +111,10 @@ def scrape_schedule(year):
         for row in table.find('tbody').find_all('tr'):
             if row.find('th', class_='thead'): continue
             
-            week = row.find('th', {'data-stat': 'week_num'}).text
+            week_cell = row.find('th', {'data-stat': 'week_num'})
+            if not week_cell: continue
+
+            week = week_cell.text
             day = row.find('td', {'data-stat': 'game_day_of_week'}).text
             date = row.find('td', {'data-stat': 'game_date'}).text
             time = row.find('td', {'data-stat': 'gametime'}).text
@@ -123,7 +126,7 @@ def scrape_schedule(year):
             
             away_team, home_team = None, None
 
-            if visitor_cell and home_cell:
+            if visitor_cell and visitor_cell.text:
                 away_team = visitor_cell.text
                 home_team = home_cell.text
             elif winner_cell and loser_cell:
@@ -168,7 +171,7 @@ if __name__ == "__main__":
         write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
     except Exception as e: 
         print(f"❌ Could not process Team Offensive Stats: {e}")
-        
+
     print("\n--- Scraping PFR PLAYER OFFENSE ---")
     try:
         passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]

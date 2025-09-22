@@ -119,17 +119,12 @@ def scrape_schedule(year):
             date = row.find('td', {'data-stat': 'game_date'}).text
             time = row.find('td', {'data-stat': 'gametime'}).text
             
-            visitor_cell = row.find('td', {'data-stat': 'visitor_team'})
-            home_cell = row.find('td', {'data-stat': 'home_team'})
             winner_cell = row.find('td', {'data-stat': 'winner'})
             loser_cell = row.find('td', {'data-stat': 'loser'})
             
             away_team, home_team = None, None
 
-            if visitor_cell and visitor_cell.text:
-                away_team = visitor_cell.text
-                home_team = home_cell.text
-            elif winner_cell and loser_cell:
+            if winner_cell and winner_cell.text:
                 winner = winner_cell.text
                 loser = loser_cell.text
                 at_cell = row.find('td', {'data-stat': 'game_location'})
@@ -139,7 +134,10 @@ def scrape_schedule(year):
                 else:
                     home_team = winner
                     away_team = loser
-            
+            else:
+                away_team = row.find('td', {'data-stat': 'visitor_team'}).text
+                home_team = row.find('td', {'data-stat': 'home_team'}).text
+
             if not away_team or not home_team: continue
             
             boxscore_cell = row.find('td', {'data-stat': 'boxscore_word'})
@@ -171,47 +169,5 @@ if __name__ == "__main__":
         write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
     except Exception as e: 
         print(f"❌ Could not process Team Offensive Stats: {e}")
-
-    print("\n--- Scraping PFR PLAYER OFFENSE ---")
-    try:
-        passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]
-        rushing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/rushing.htm")[0]
-        receiving_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/receiving.htm")[0]
-        write_to_sheet(spreadsheet, "O_Player_Passing", clean_pfr_table(passing_df))
-        write_to_sheet(spreadsheet, "O_Player_Rushing", clean_pfr_table(rushing_df))
-        write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
-    except Exception as e: print(f"❌ Could not process Player Offensive Stats: {e}")
-
-    print("\n--- Scraping FootballGuys.com Depth Charts (with Status) ---")
-    try:
-        url = "https://www.footballguys.com/depth-charts"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.content, 'html.parser')
-        team_containers = soup.find_all('div', class_='depth-chart')
-        all_players = []
-        status_pattern = re.compile(r'(.+?)\s+\(([A-Z-]+)\)$')
-        for container in team_containers:
-            team_name_tag = container.find('span', class_='team-header')
-            if team_name_tag:
-                team_name = team_name_tag.text.strip()
-                position_items = container.find_all('li')
-                for item in position_items:
-                    pos_label_tag = item.find('span', class_='pos-label')
-                    if pos_label_tag:
-                        position = pos_label_tag.text.replace(':', '').strip()
-                        player_tags = item.find_all(['a', 'span'], class_='player')
-                        for i, player_tag in enumerate(player_tags):
-                            player_text = player_tag.text.strip()
-                            clean_name, status = player_text, 'Healthy'
-                            match = status_pattern.match(player_text)
-                            if match:
-                                clean_name, status = match.group(1).strip(), match.group(2).strip()
-                            all_players.append({'Team': team_name, 'Position': position, 'Depth': i + 1, 'Player': clean_name, 'Status': status})
-        if all_players:
-            depth_chart_df = pd.DataFrame(all_players)
-            write_to_sheet(spreadsheet, "Depth_Charts", depth_chart_df)
-    except Exception as e:
-        print(f"❌ Could not process Depth Charts: {e}")
 
     print("\n✅ Scraper script finished.")

@@ -1,3 +1,9 @@
+# pfr_scraper.py
+# This is the final, complete version.
+# Its primary job is to scrape all necessary data and format it cleanly for the prediction script.
+# The scrape_schedule function is the most critical part, as it now intelligently handles
+# both past and future games to create consistent "Away Team" and "Home Team" columns.
+
 import requests
 import pandas as pd
 import gspread
@@ -9,7 +15,6 @@ import os
 import pickle
 import io
 import re
-from datetime import datetime
 
 # --- CONFIGURATION ---
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
@@ -121,23 +126,25 @@ def scrape_schedule(year):
             
             winner_cell = row.find('td', {'data-stat': 'winner'})
             loser_cell = row.find('td', {'data-stat': 'loser'})
+            visitor_cell = row.find('td', {'data-stat': 'visitor_team'})
+            home_cell = row.find('td', {'data-stat': 'home_team'})
             
             away_team, home_team = None, None
 
-            if winner_cell and winner_cell.text:
+            if visitor_cell and visitor_cell.text: # Future game format
+                away_team = visitor_cell.text
+                home_team = home_cell.text
+            elif winner_cell and loser_cell: # Completed game format
                 winner = winner_cell.text
                 loser = loser_cell.text
                 at_cell = row.find('td', {'data-stat': 'game_location'})
-                if at_cell and at_cell.text == '@':
+                if at_cell and at_cell.text == '@': # Winner was away team
                     home_team = loser
                     away_team = winner
-                else:
+                else: # Winner was home team
                     home_team = winner
                     away_team = loser
-            else:
-                away_team = row.find('td', {'data-stat': 'visitor_team'}).text
-                home_team = row.find('td', {'data-stat': 'home_team'}).text
-
+            
             if not away_team or not home_team: continue
             
             boxscore_cell = row.find('td', {'data-stat': 'boxscore_word'})
@@ -161,13 +168,5 @@ if __name__ == "__main__":
     schedule_df = scrape_schedule(YEAR)
     if not schedule_df.empty:
         write_to_sheet(spreadsheet, "Schedule", schedule_df)
-
-    print("\n--- Scraping PFR TEAM OFFENSE ---")
-    try:
-        url = f"https://www.pro-football-reference.com/years/{YEAR}/"
-        team_offense_df = pd.read_html(url, attrs={'id': 'team_stats'})[0]
-        write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
-    except Exception as e: 
-        print(f"❌ Could not process Team Offensive Stats: {e}")
-
+    
     print("\n✅ Scraper script finished.")

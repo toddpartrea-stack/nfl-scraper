@@ -7,7 +7,6 @@ import re
 import os
 import pickle
 import pytz
-from pfr_scraper import scrape_box_score
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 

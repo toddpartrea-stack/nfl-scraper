@@ -115,15 +115,20 @@ def scrape_schedule(year):
             day = row.find('td', {'data-stat': 'game_day_of_week'}).text
             date = row.find('td', {'data-stat': 'game_date'}).text
             time = row.find('td', {'data-stat': 'gametime'}).text
-            visitor = row.find('td', {'data-stat': 'visitor_team'}).text
-            home = row.find('td', {'data-stat': 'home_team'}).text
             
+            winner = row.find('td', {'data-stat': 'winner'}).text
+            loser = row.find('td', {'data-stat': 'loser'}).text
+            
+            # Use data-stat attributes for precise home/away identification
+            at_cell = row.find('td', {'data-stat': 'game_location'})
+            at_symbol = at_cell.text if at_cell else ''
+
             boxscore_cell = row.find('td', {'data-stat': 'boxscore_word'})
             boxscore_link = boxscore_cell.find('a')['href'] if boxscore_cell and boxscore_cell.find('a') else ''
             
-            rows.append([week, day, date, time, visitor, home, boxscore_link])
+            rows.append([week, day, date, time, winner, at_symbol, loser, boxscore_link])
 
-        headers = ["Week", "Day", "Date", "Time", "Visitor", "Home", "Boxscore"]
+        headers = ["Week", "Day", "Date", "Time", "Winner/tie", "At", "Loser/tie", "Boxscore"]
         df = pd.DataFrame(rows, columns=headers)
         return df
     except Exception as e:

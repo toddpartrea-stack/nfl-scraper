@@ -1,3 +1,5 @@
+name: Run NFL Data and Prediction Pipeline
+
 on:
   schedule:
     # Runs daily at 14:00 UTC (10 AM EDT)
@@ -24,12 +26,10 @@ jobs:
           echo '${{ secrets.GDRIVE_CREDENTIALS }}' > credentials.json
           echo '${{ secrets.GDRIVE_TOKEN_BASE64 }}' | base64 --decode > token.pickle
 
-      - name: Run Scraper Script to get fresh data
+      - name: Run Scraper Script
         run: python pfr_scraper.py
-        run: echo "Scraper script is currently disabled for diagnostics."
 
       - name: Run Prediction Script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python run_predictions.py
-        run: echo "Prediction script is currently disabled for diagnostics."

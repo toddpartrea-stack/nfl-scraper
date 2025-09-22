@@ -26,12 +26,13 @@ jobs:
 
       - name: Run Scraper Script to get fresh data
         #run: python pfr_scraper.py
+        run: echo "Scraper script is currently disabled for diagnostics."
 
-      # --- NEW STEP ---
       - name: Run Prediction Script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         #run: python run_predictions.py
+        run: echo "Prediction script is currently disabled for diagnostics."
 
-        - name: Run Diagnostic Check
+      - name: Run Diagnostic Check
         run: python diagnostic_checker.py

@@ -160,10 +160,12 @@ if __name__ == "__main__":
     gc = get_gspread_client()
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
 
+    # Scrape the schedule with the robust function
     schedule_df = scrape_schedule(YEAR)
     if not schedule_df.empty:
         write_to_sheet(spreadsheet, "Schedule", schedule_df)
 
+    # Scrape the team-level offense stats
     print("\n--- Scraping PFR TEAM OFFENSE ---")
     try:
         url = f"https://www.pro-football-reference.com/years/{YEAR}/"
@@ -171,7 +173,8 @@ if __name__ == "__main__":
         write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
     except Exception as e: 
         print(f"❌ Could not process Team Offensive Stats: {e}")
-
+    
+    # Scrape player-level stats
     print("\n--- Scraping PFR PLAYER OFFENSE ---")
     try:
         passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]
@@ -180,8 +183,10 @@ if __name__ == "__main__":
         write_to_sheet(spreadsheet, "O_Player_Passing", clean_pfr_table(passing_df))
         write_to_sheet(spreadsheet, "O_Player_Rushing", clean_pfr_table(rushing_df))
         write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
-    except Exception as e: print(f"❌ Could not process Player Offensive Stats: {e}")
+    except Exception as e:
+        print(f"❌ Could not process Player Offensive Stats: {e}")
 
+    # Scrape depth charts with injury status
     print("\n--- Scraping FootballGuys.com Depth Charts (with Status) ---")
     try:
         url = "https://www.footballguys.com/depth-charts"

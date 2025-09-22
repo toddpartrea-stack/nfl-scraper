@@ -41,11 +41,13 @@ def normalize_player_name(name):
     return name
 
 def get_out_players_set(depth_chart_df):
+    if depth_chart_df.empty: return set()
     out_statuses = ['O', 'IR', 'PUP', 'NFI', 'IR-R']
     out_players_df = depth_chart_df[depth_chart_df['Status'].isin(out_statuses)]
     return {normalize_player_name(name) for name in out_players_df['Player']}
 
 def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out_players_set, pos_config):
+    if stats_df.empty or depth_chart_df.empty: return pd.DataFrame()
     player_col = next((c for c in stats_df.columns if 'Player' in c), None)
     if not player_col: return pd.DataFrame()
 
@@ -74,8 +76,9 @@ def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out
         if pd.api.types.is_numeric_dtype(merged_df[col]):
             merged_df[col] = merged_df[col].fillna(0)
     
-    merged_df['Player'] = merged_df['Player_x'].fillna(merged_df['Player_y'])
-    merged_df['Pos'] = merged_df['Pos_x'].fillna(merged_df['Pos_y'])
+    if 'Player_x' in merged_df.columns:
+        merged_df['Player'] = merged_df['Player_x'].fillna(merged_df['Player_y'])
+        merged_df['Pos'] = merged_df['Pos_x'].fillna(merged_df['Pos_y'])
     if 'Team_Abbr' not in merged_df.columns: merged_df['Team_Abbr'] = team_abbr
     merged_df['Team_Abbr'] = merged_df['Team_Abbr'].fillna(team_abbr)
 
@@ -153,11 +156,15 @@ def main():
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = ['_'.join(col).strip() for col in df.columns.values]
         
+        # This loop standardizes any column that matches our list
         for col in possible_team_cols:
             if col in df.columns:
-                df['Team_Full'] = df[col].map(master_team_map).fillna(df[col])
+                df[col] = df[col].map(master_team_map).fillna(df[col])
         
-        if 'Team_Full' in df.columns:
+        # Create Team_Full and Team_Abbr from the first available standard column
+        team_col_found = next((col for col in possible_team_cols if col in df.columns), None)
+        if team_col_found and 'Team_Full' not in df.columns:
+            df['Team_Full'] = df[team_col_found]
             df.dropna(subset=['Team_Full'], inplace=True)
             df['Team_Abbr'] = df['Team_Full'].map(full_name_to_abbr)
             print(f"  -> Standardized team names for '{name}' sheet.")
@@ -236,7 +243,7 @@ def main():
             
             matchup_prompt = f"""
             Act as an expert NFL analyst. Predict the outcome of the {away_team_full} at {home_team_full} game.
-            Analyze the provided data. If a player has all zero stats, they are a rookie or have not recorded stats this season.
+            Analyze the provided data. If a player has all zero stats, it means they are a rookie or have not recorded stats this season.
 
             ---
             ## {home_team_full} (Home) Data
@@ -295,7 +302,7 @@ def main():
             
         time.sleep(10)
 
-    # hide_data_sheets(spreadsheet)
+    hide_data_sheets(spreadsheet)
     print("\n✅ Prediction script finished.")
 
 if __name__ == "__main__":

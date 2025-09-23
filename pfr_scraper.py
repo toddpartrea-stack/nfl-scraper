@@ -171,7 +171,7 @@ if __name__ == "__main__":
         write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
     except Exception as e: 
         print(f"❌ Could not process Team Offensive Stats: {e}")
-
+    
     print("\n--- Scraping PFR PLAYER OFFENSE ---")
     try:
         passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]
@@ -180,7 +180,8 @@ if __name__ == "__main__":
         write_to_sheet(spreadsheet, "O_Player_Passing", clean_pfr_table(passing_df))
         write_to_sheet(spreadsheet, "O_Player_Rushing", clean_pfr_table(rushing_df))
         write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
-    except Exception as e: print(f"❌ Could not process Player Offensive Stats: {e}")
+    except Exception as e:
+        print(f"❌ Could not process Player Offensive Stats: {e}")
 
     print("\n--- Scraping FootballGuys.com Depth Charts (with Status) ---")
     try:

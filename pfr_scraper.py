@@ -160,9 +160,11 @@ if __name__ == "__main__":
     gc = get_gspread_client()
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
 
-    schedule_df = scrape_schedule(YEAR)
-    if not schedule_df.empty:
-        write_to_sheet(spreadsheet, "Schedule", schedule_df)
+  # We are no longer scraping the schedule daily
+    print("\n--- Skipping Schedule Scrape (using static data from sheet) ---")
+    # schedule_df = scrape_schedule(YEAR)
+    # if not schedule_df.empty:
+    #     write_to_sheet(spreadsheet, "Schedule", schedule_df)
 
     print("\n--- Scraping PFR TEAM OFFENSE ---")
     try:

@@ -119,6 +119,8 @@ def hide_data_sheets(spreadsheet):
 
 def find_or_create_row(worksheet, away_team, home_team, kickoff_str):
     all_sheet_data = worksheet.get_all_values()
+    # The new output sheet headers are "Away Team" and "Home Team"
+    # This checks column 1 (index 0) and 2 (index 1) of the output sheet
     for i, row in enumerate(all_sheet_data[1:], start=2):
         if row and len(row) > 1 and row[0] == away_team and row[1] == home_team:
             return i
@@ -151,7 +153,8 @@ def main():
         if full_name and abbr: full_name_to_abbr[full_name] = abbr
     
     print("\nStandardizing team names across all data sheets...")
-    possible_team_cols = ['Away Team', 'Home Team', 'Team']
+    # --- MODIFICATION: Updated list to look for 'Visitor' and 'Home' ---
+    possible_team_cols = ['Visitor', 'Home', 'Team']
     for name, df in dataframes.items():
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = ['_'.join(col).strip() for col in df.columns.values]
@@ -172,6 +175,9 @@ def main():
     now_utc = datetime.now(timezone.utc)
     
     schedule_df = dataframes['Schedule']
+    # Add 'Visitor' and 'Home' to the list of columns to rename for standardization
+    schedule_df.rename(columns={'Visitor': 'Away Team', 'Home': 'Home Team'}, inplace=True)
+
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
     schedule_df.dropna(subset=['Week'], inplace=True)
     if schedule_df.empty:
@@ -179,20 +185,10 @@ def main():
         return
     schedule_df['Week'] = schedule_df['Week'].astype(int)
     
-    # --- START: MODIFIED DATETIME LOGIC ---
-    # Combine date and time strings to create a full, naive datetime string
     datetime_str = schedule_df['Date'] + " " + str(YEAR) + " " + schedule_df['Time'].str.replace('p', ' PM').str.replace('a', ' AM')
-    
-    # Convert string to a naive datetime object. Errors become Not a Time (NaT).
     naive_datetime = pd.to_datetime(datetime_str, errors='coerce')
-    
-    # Localize the naive datetime to US/Eastern, then immediately convert to UTC.
-    # This makes all datetimes standardized for comparison.
     schedule_df['datetime'] = naive_datetime.dt.tz_localize(eastern_tz, ambiguous='infer').dt.tz_convert('UTC')
-    
-    # Drop any rows where the date/time conversion failed
     schedule_df.dropna(subset=['datetime'], inplace=True)
-    # --- END: MODIFIED DATETIME LOGIC ---
 
     if now_utc.astimezone(eastern_tz).weekday() >= 2 and now_utc.astimezone(eastern_tz).hour >= 6:
         future_games = schedule_df[schedule_df['datetime'] > now_utc]
@@ -228,12 +224,12 @@ def main():
     team_offense_2025 = dataframes.get('O_Team_Overall', pd.DataFrame())
     
     for index, game in this_weeks_games.iterrows():
+        # --- MODIFICATION: Read from the new standardized column names ---
         away_team_full = game['Away Team']
         home_team_full = game['Home Team']
-        kickoff_time_utc = game['datetime'] # This is now a UTC-aware datetime object
+        kickoff_time_utc = game['datetime']
         boxscore_link = game.get('Boxscore', '')
         
-        # For display in the sheet, convert the UTC time back to a more readable Eastern time string
         kickoff_display_str = kickoff_time_utc.astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
 
         print(f"\n--- Processing Matchup: {away_team_full} at {home_team_full} ---")

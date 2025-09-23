@@ -1,7 +1,7 @@
 import requests
 import pandas as pd
 import gspread
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 import os
 import pickle
 import re
@@ -56,34 +56,8 @@ def clean_pfr_table(df):
     return df
 
 def scrape_box_score(box_score_url):
-    print(f"    -> Scraping box score: {box_score_url}")
-    if not box_score_url or 'boxscores' not in box_score_url:
-        return None
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(box_score_url, headers=headers)
-        response.raise_for_status()
-        all_tables = pd.read_html(StringIO(response.text))
-        stats_df = None
-        for table in all_tables:
-            if isinstance(table.columns, pd.MultiIndex) and 'Player' in table.columns.get_level_values(1):
-                stats_df = table
-                break
-        if stats_df is None: return None
-        stats_df.columns = ['_'.join(col).strip() for col in stats_df.columns]
-        stats_df = stats_df[stats_df['Unnamed: 0_level_0_Player'] != 'Player'].copy()
-        key_stats = {'Unnamed: 0_level_0_Player': 'Player', 'Passing_Cmp': 'PassCmp', 'Passing_Att': 'PassAtt', 'Passing_Yds': 'PassYds', 'Passing_TD': 'PassTD', 'Rushing_Att': 'RushAtt', 'Rushing_Yds': 'RushYds', 'Rushing_TD': 'RushTD', 'Receiving_Tgt': 'RecTgt', 'Receiving_Rec': 'Rec', 'Receiving_Yds': 'RecYds', 'Receiving_TD': 'RecTD'}
-        cols_to_keep = [col for col in key_stats.keys() if col in stats_df.columns]
-        final_stats_df = stats_df[cols_to_keep].rename(columns=key_stats)
-        soup = BeautifulSoup(response.content, 'html.parser')
-        scorebox = soup.find('div', class_='scorebox')
-        scores = scorebox.find_all('div', class_='score')
-        away_score, home_score = scores[0].text.strip(), scores[1].text.strip()
-        final_score = f"{away_score}-{home_score}"
-        return {"final_score": final_score, "player_stats": final_stats_df}
-    except Exception as e:
-        print(f"    -> An error occurred scraping the box score: {e}")
-        return None
+    # This function is not called by this script, but is kept for the prediction script
+    pass
 
 # --- MAIN SCRIPT FOR DAILY DATA DUMP ---
 if __name__ == "__main__":
@@ -97,7 +71,6 @@ if __name__ == "__main__":
         print(f"\n--- Scraping PFR TEAM {stat_type[0].upper()} ---")
         try:
             page_suffix = stat_type[1]
-            # --- FIX: Correctly build the URL ---
             url = f"https://www.pro-football-reference.com/years/{YEAR}/"
             if page_suffix:
                 url += f"{page_suffix}.htm"
@@ -105,37 +78,40 @@ if __name__ == "__main__":
             response = requests.get(url, headers=headers)
             response.raise_for_status()
             
-            # --- FIX: Use StringIO to pass HTML to pandas, as recommended ---
-            all_tables = pd.read_html(StringIO(response.text))
+            soup = BeautifulSoup(response.text, 'html.parser')
+            table_html = None
             
-            target_df = None
-            column_to_find = 'PF' if stat_type[0] == "Offense" else 'PA'
-            
-            for table in all_tables:
-                # Check both single and multi-level headers
-                cols = table.columns.get_level_values(-1) if isinstance(table.columns, pd.MultiIndex) else table.columns
-                if column_to_find in cols:
-                    target_df = table
+            comments = soup.find_all(string=lambda text: isinstance(text, Comment))
+            for comment in comments:
+                if 'id="team_stats"' in comment or 'id="opp_stats"' in comment:
+                    table_html = comment
                     break
             
-            if target_df is not None:
+            if not table_html:
+                table_html = soup.find('table', id='team_stats') or soup.find('table', id='opp_stats')
+
+            if table_html:
+                df = pd.read_html(StringIO(str(table_html)))[0]
                 sheet_name = "O_Team_Overall" if stat_type[0] == "Offense" else "D_Overall"
-                write_to_sheet(spreadsheet, sheet_name, clean_pfr_table(target_df))
+                write_to_sheet(spreadsheet, sheet_name, clean_pfr_table(df))
             else:
-                raise ValueError(f"Could not find the team {stat_type[0].lower()} stats table.")
+                raise ValueError(f"Could not find the main team {stat_type[0].lower()} stats table (hidden or visible).")
+        
         except Exception as e:
             print(f"❌ Could not process Team {stat_type[0]} Stats: {e}")
 
-    print("\n--- Scraping PFR PLAYER OFFENSE ---")
-    try:
-        passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]
-        rushing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/rushing.htm")[0]
-        receiving_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/receiving.htm")[0]
-        write_to_sheet(spreadsheet, "O_Player_Passing", clean_pfr_table(passing_df))
-        write_to_sheet(spreadsheet, "O_Player_Rushing", clean_pfr_table(rushing_df))
-        write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
-    except Exception as e:
-        print(f"❌ Could not process Player Offensive Stats: {e}")
+    for year in [YEAR, YEAR - 1]:
+        print(f"\n--- Scraping PFR PLAYER OFFENSE ({year}) ---")
+        prefix = "" if year == YEAR else f"{year}_"
+        try:
+            passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{year}/passing.htm")[0]
+            rushing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{year}/rushing.htm")[0]
+            receiving_df = pd.read_html(f"https://www.pro-football-reference.com/years/{year}/receiving.htm")[0]
+            write_to_sheet(spreadsheet, f"{prefix}O_Player_Passing", clean_pfr_table(passing_df))
+            write_to_sheet(spreadsheet, f"{prefix}O_Player_Rushing", clean_pfr_table(rushing_df))
+            write_to_sheet(spreadsheet, f"{prefix}O_Player_Receiving", clean_pfr_table(receiving_df))
+        except Exception as e:
+            print(f"❌ Could not process Player Offensive Stats for {year}: {e}")
 
     print("\n--- Scraping FootballGuys.com Depth Charts (with Status) ---")
     try:

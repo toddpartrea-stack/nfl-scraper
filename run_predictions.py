@@ -166,6 +166,7 @@ def main():
                 print(f"  -> WARNING: Could not find a standard team column ('Team', 'Tm', 'Home', etc.) in the '{name}' sheet.")
                 print(f"     Found columns: {list(df.columns)}")
 
+
     eastern_tz = pytz.timezone('US/Eastern')
     now_utc = datetime.now(timezone.utc)
     now_eastern = now_utc.astimezone(eastern_tz)
@@ -285,9 +286,16 @@ def main():
                 home_team_off_2025 = team_offense_2025[team_offense_2025['Team_Full'] == home_team_full]
                 away_team_off_2025 = team_offense_2025[team_offense_2025['Team_Full'] == away_team_full]
                 
+                # --- NEW: Smarter Prompt with Analysis Guidelines ---
                 matchup_prompt = f"""
                 Act as an expert NFL analyst. Predict the outcome of the {away_team_full} at {home_team_full} game.
-                Analyze the provided data. If a player has all zero stats, it means they are a rookie or have not recorded stats this season.
+
+                **Analysis Guidelines:**
+                - **Prioritize current {YEAR} season data** as the primary indicator of team form.
+                - Use {YEAR-1} data as supplementary context, especially for players with limited stats this season.
+                - Acknowledge that early-season data is limited. Base your analysis on performance within the games played so far, rather than focusing on the small sample size.
+
+                Analyze the provided data tables below. If a player has all zero stats for {YEAR}, it means they are a rookie or have not yet recorded stats.
                 ---
                 ## {home_team_full} (Home) Data
                 - Team Offense ({YEAR}): {home_team_off_2025.to_string()}
@@ -299,7 +307,7 @@ def main():
                 - Active Player Stats ({YEAR}): {away_roster.to_string()}
                 - Previous Season Stats ({YEAR-1}): {away_hist.to_string()}
                 ---
-                Based on the data, provide the following in a clear format:
+                Based on your analysis following the guidelines, provide the following in a clear format:
                 1. **Game Prediction:** Predicted Winner and Predicted Final Score.
                 2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
                 3. **Justification:** A brief justification for your prediction.

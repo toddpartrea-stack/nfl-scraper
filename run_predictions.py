@@ -149,7 +149,8 @@ def main():
     for name, df in dataframes.items():
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = ['_'.join(col).strip() for col in df.columns.values]
-        team_cols_to_process = [col for col in ['Visitor', 'Home', 'Team', 'Away Team', 'Home Team'] if col in df.columns]
+        # --- FIX: Added 'Tm' to the list of possible team column headers ---
+        team_cols_to_process = [col for col in ['Visitor', 'Home', 'Team', 'Away Team', 'Home Team', 'Tm'] if col in df.columns]
         for col in team_cols_to_process:
             df[col] = df[col].map(master_team_map).fillna(df[col])
         if team_cols_to_process and 'Team_Full' not in df.columns:
@@ -245,7 +246,6 @@ def main():
             worksheet = spreadsheet.worksheet(sheet_name)
         except gspread.WorksheetNotFound:
             headers = ["Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", "Actual Winner", "Actual Score", "Prediction Details"]
-            # --- FIX: Create the sheet with more than one row ---
             worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=100, cols=len(headers))
             worksheet.update([headers], 'A1')
             worksheet.freeze(rows=1)

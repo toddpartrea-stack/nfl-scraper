@@ -18,8 +18,6 @@ YEAR = 2025
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # --- MANUAL OVERRIDE ---
-# Set this to a week number (e.g., 3) to run predictions for that week.
-# Set it back to None for normal scheduled operation.
 MANUAL_WEEK_OVERRIDE = None
 
 # --- AUTHENTICATION ---
@@ -162,6 +160,7 @@ def run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, wee
     team_offense_2025 = dataframes.get('O_Team_Overall', pd.DataFrame())
 
     for index, game in this_weeks_games.iterrows():
+        # In manual override, we predict all games for that week regardless of time
         if game['datetime'] > now_utc or week_override is not None:
             away_team_full, home_team_full = game['Away Team'], game['Home Team']
             print(f"\n--- Predicting: {away_team_full} at {home_team_full} ---")
@@ -289,17 +288,73 @@ def main():
 
     dataframes = {}
     print("\nLoading data from Google Sheet tabs...")
-    # ... (rest of main function is unchanged)
-    for worksheet in spreadsheet.worksheets():
-        # ...
-        pass
-    
-    master_team_map, full_name_to_abbr = {}, {} # Simplified for brevity
+    try:
+        for worksheet in spreadsheet.worksheets():
+            title = worksheet.title
+            if not title.startswith("Week_"):
+                data = worksheet.get_all_values()
+                if data:
+                    dataframes[title] = pd.DataFrame(data[1:], columns=data[0])
+                    print(f"  -> Loaded data tab: {title}")
+    except Exception as e:
+        print(f"❌ A critical error occurred while trying to read sheets from the spreadsheet: {e}")
+        return
+
+    # --- Sanity check for critical data sheets ---
+    required_sheets = ['Schedule', 'team_match']
+    if not all(sheet in dataframes for sheet in required_sheets):
+        print("❌ CRITICAL ERROR: Could not load required data tabs.")
+        print(f"   Required tabs: {required_sheets}")
+        print(f"   Tabs found: {list(dataframes.keys())}")
+        print("   Please check that these tabs exist, are named correctly, and are not empty.")
+        return
+
+    print("\nBuilding team name master map...")
+    team_map_df = dataframes['team_match']
+    master_team_map, full_name_to_abbr = {}, {}
+    for _, row in team_map_df.iterrows():
+        full_name, abbr = row['Full Name'], row['Abbreviation']
+        for col in team_map_df.columns:
+            if row[col]: master_team_map[row[col]] = full_name
+        if full_name and abbr: full_name_to_abbr[full_name] = abbr
+
+    print("\nStandardizing team names...")
+    for name, df in dataframes.items():
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(1)
+        team_cols_to_process = [col for col in ['Visitor', 'Home', 'Team', 'Away Team', 'Home Team', 'Tm'] if col in df.columns]
+        if team_cols_to_process:
+            for col in team_cols_to_process:
+                df[col] = df[col].map(master_team_map).fillna(df[col])
+            if 'Team_Full' not in df.columns:
+                team_col_found = team_cols_to_process[0]
+                if team_col_found:
+                    df['Team_Full'] = df[team_col_found]
+                    df.dropna(subset=['Team_Full'], inplace=True)
+                    df['Team_Abbr'] = df['Team_Full'].map(full_name_to_abbr)
+        else:
+            if not df.empty and name != 'team_match':
+                print(f"  -> WARNING: Could not find a standard team column in '{name}' sheet.")
+                print(f"     Found columns: {list(df.columns)}")
     
     eastern_tz = pytz.timezone('US/Eastern')
     now_utc = datetime.now(timezone.utc)
     now_eastern = now_utc.astimezone(eastern_tz)
 
+    schedule_df = dataframes['Schedule']
+    schedule_df.rename(columns={'Visitor': 'Away Team', 'Home': 'Home Team'}, inplace=True, errors='ignore')
+    schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
+    schedule_df.dropna(subset=['Week'], inplace=True)
+    schedule_df['Week'] = schedule_df['Week'].astype(int)
+    datetime_str = schedule_df['Date'] + " " + schedule_df['Time'].str.replace('p', ' PM').str.replace('a', ' AM')
+    naive_datetime = pd.to_datetime(datetime_str, errors='coerce')
+    schedule_df.dropna(subset=['Date', 'Time'], inplace=True)
+    schedule_df['datetime'] = naive_datetime.dt.tz_localize(eastern_tz, ambiguous='infer').dt.tz_convert('UTC')
+    schedule_df.dropna(subset=['datetime'], inplace=True)
+    
+    dataframes['Schedule'] = schedule_df
+
+    # --- WEEKLY SCHEDULE LOGIC ---
     if MANUAL_WEEK_OVERRIDE is not None:
         print(f"\n--- MANUAL OVERRIDE: Running Predictions for Week {MANUAL_WEEK_OVERRIDE} ---")
         run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, week_override=MANUAL_WEEK_OVERRIDE)

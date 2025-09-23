@@ -58,43 +58,39 @@ def clean_pfr_table(df):
     df = df.dropna(how='all').reset_index(drop=True)
     return df
 
-# --- START: REWRITTEN scrape_box_score FUNCTION ---
+# --- START: FINAL scrape_box_score FUNCTION ---
 def scrape_box_score(box_score_url):
     print(f"    -> Scraping box score: {box_score_url}")
     if not box_score_url or not isinstance(box_score_url, str) or 'boxscores' not in box_score_url:
         return None
     try:
-        # --- STRATEGY 1: Use Pandas to read all tables ---
-        # pd.read_html is powerful and can often find tables even if they are in comments
+        # --- STRATEGY 1: Use Pandas to find the single, combined player stats table ---
         all_tables = pd.read_html(box_score_url)
 
-        player_stats_dfs = []
-        # Find the two player stats tables by looking for a 'Player' column header
+        stats_df = None
+        # Find the player stats table by looking for the unique MultiIndex column structure.
         for table in all_tables:
-            if isinstance(table.columns, pd.MultiIndex) and 'Player' in table.columns.get_level_values(0):
-                player_stats_dfs.append(table)
+            # This checks if the column headers are multi-level (e.g., 'Passing' over 'Cmp')
+            if isinstance(table.columns, pd.MultiIndex):
+                # We found our table, so we store it and stop looking.
+                stats_df = table
+                break
         
-        if len(player_stats_dfs) < 2:
-            print("    -> FAILED: Could not find two player stats tables.")
-            return None # Could not find both team stat tables
+        if stats_df is None:
+            print("    -> FAILED: Could not find the combined player stats table.")
+            return None
         
-        # Combine the two dataframes (one for each team) into one
-        stats_df = pd.concat(player_stats_dfs, ignore_index=True)
-
-        # --- Clean up the combined dataframe ---
-        # Flatten the multi-level column headers (e.g., 'Passing' 'Yds' -> 'Passing_Yds')
+        # --- Clean up the dataframe ---
         stats_df.columns = ['_'.join(col).strip() for col in stats_df.columns]
-        # Remove the intermittent header rows that are included in the scrape
-        stats_df = stats_df[stats_df['Player_Player'] != 'Player'].copy()
+        stats_df = stats_df[stats_df['Unnamed: 0_level_0_Player'] != 'Player'].copy()
         
         # Define the key stats we want to keep and give them simpler names
         key_stats = {
-            'Player_Player': 'Player', 'Passing_Cmp': 'PassCmp', 'Passing_Att': 'PassAtt',
+            'Unnamed: 0_level_0_Player': 'Player', 'Passing_Cmp': 'PassCmp', 'Passing_Att': 'PassAtt',
             'Passing_Yds': 'PassYds', 'Passing_TD': 'PassTD', 'Rushing_Att': 'RushAtt',
             'Rushing_Yds': 'RushYds', 'Rushing_TD': 'RushTD', 'Receiving_Tgt': 'RecTgt',
             'Receiving_Rec': 'Rec', 'Receiving_Yds': 'RecYds', 'Receiving_TD': 'RecTD'
         }
-        # Filter the dataframe to only keep the columns we care about
         cols_to_keep = [col for col in key_stats.keys() if col in stats_df.columns]
         final_stats_df = stats_df[cols_to_keep].rename(columns=key_stats)
 
@@ -104,19 +100,18 @@ def scrape_box_score(box_score_url):
         soup = BeautifulSoup(response.content, 'html.parser')
         
         scorebox = soup.find('div', class_='scorebox')
-        away_score_div = scorebox.find('div', class_='scores').find_next_sibling('div')
-        home_score_div = away_score_div.find_next_sibling('div')
-        away_score = away_score_div.find('div', class_='score').text.strip()
-        home_score = home_score_div.find('div', class_='score').text.strip()
+        scores = scorebox.find_all('div', class_='score')
+        away_score = scores[0].text.strip()
+        home_score = scores[1].text.strip()
         final_score = f"{away_score}-{home_score}"
 
-        # Return all the data in the expected format
         return {"final_score": final_score, "player_stats": final_stats_df}
 
     except Exception as e:
         print(f"    -> An error occurred scraping the box score: {e}")
         return None
-# --- END: REWRITTEN scrape_box_score FUNCTION ---
+# --- END: FINAL scrape_box_score FUNCTION ---
+
 
 def scrape_schedule(year):
     print("\n--- Scraping PFR SCHEDULE ---")
@@ -143,35 +138,22 @@ def scrape_schedule(year):
             date = row.find('td', {'data-stat': 'game_date'}).text
             time = row.find('td', {'data-stat': 'gametime'}).text
 
-            winner_cell = row.find('td', {'data-stat': 'winner'})
-            loser_cell = row.find('td', {'data-stat': 'loser'})
             visitor_cell = row.find('td', {'data-stat': 'visitor_team'})
             home_cell = row.find('td', {'data-stat': 'home_team'})
 
-            away_team, home_team = None, None
-
+            # PFR now consistently uses visitor/home team columns
             if visitor_cell and visitor_cell.text:
                 away_team = visitor_cell.text
                 home_team = home_cell.text
-            elif winner_cell and loser_cell:
-                winner = winner_cell.text
-                loser = loser_cell.text
-                at_cell = row.find('td', {'data-stat': 'game_location'})
-                if at_cell and at_cell.text == '@':
-                    home_team = loser
-                    away_team = winner
-                else:
-                    home_team = winner
-                    away_team = loser
-
-            if not away_team or not home_team: continue
+            else:
+                continue # Skip rows that aren't games
 
             boxscore_cell = row.find('td', {'data-stat': 'boxscore_word'})
             boxscore_link = boxscore_cell.find('a')['href'] if boxscore_cell and boxscore_cell.find('a') else ''
 
             rows.append([week, day, date, time, away_team, home_team, boxscore_link])
 
-        headers = ["Week", "Day", "Date", "Time", "Away Team", "Home Team", "Boxscore"]
+        headers = ["Week", "Day", "Date", "Time", "Visitor", "Home", "Boxscore"]
         df = pd.DataFrame(rows, columns=headers)
         return df
     except Exception as e:
@@ -183,12 +165,6 @@ if __name__ == "__main__":
     print("Authenticating with Google Sheets...")
     gc = get_gspread_client()
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
-
-  # We are no longer scraping the schedule daily
-    print("\n--- Skipping Schedule Scrape (using static data from sheet) ---")
-    # schedule_df = scrape_schedule(YEAR)
-    # if not schedule_df.empty:
-    #     write_to_sheet(spreadsheet, "Schedule", schedule_df)
 
     print("\n--- Scraping PFR TEAM OFFENSE ---")
     try:

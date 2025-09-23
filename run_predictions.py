@@ -10,6 +10,7 @@ import pytz
 from pfr_scraper import scrape_box_score
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
+from io import StringIO
 
 # --- CONFIGURATION ---
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
@@ -18,6 +19,8 @@ YEAR = 2025
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # --- MANUAL OVERRIDE ---
+# Set this to a week number (e.g., 3) to run predictions for that week.
+# Set it back to None for normal scheduled operation.
 MANUAL_WEEK_OVERRIDE = None
 
 # --- AUTHENTICATION ---
@@ -160,7 +163,6 @@ def run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, wee
     team_offense_2025 = dataframes.get('O_Team_Overall', pd.DataFrame())
 
     for index, game in this_weeks_games.iterrows():
-        # In manual override, we predict all games for that week regardless of time
         if game['datetime'] > now_utc or week_override is not None:
             away_team_full, home_team_full = game['Away Team'], game['Home Team']
             print(f"\n--- Predicting: {away_team_full} at {home_team_full} ---")
@@ -300,7 +302,6 @@ def main():
         print(f"❌ A critical error occurred while trying to read sheets from the spreadsheet: {e}")
         return
 
-    # --- Sanity check for critical data sheets ---
     required_sheets = ['Schedule', 'team_match']
     if not all(sheet in dataframes for sheet in required_sheets):
         print("❌ CRITICAL ERROR: Could not load required data tabs.")
@@ -351,10 +352,8 @@ def main():
     schedule_df.dropna(subset=['Date', 'Time'], inplace=True)
     schedule_df['datetime'] = naive_datetime.dt.tz_localize(eastern_tz, ambiguous='infer').dt.tz_convert('UTC')
     schedule_df.dropna(subset=['datetime'], inplace=True)
-    
     dataframes['Schedule'] = schedule_df
 
-    # --- WEEKLY SCHEDULE LOGIC ---
     if MANUAL_WEEK_OVERRIDE is not None:
         print(f"\n--- MANUAL OVERRIDE: Running Predictions for Week {MANUAL_WEEK_OVERRIDE} ---")
         run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, week_override=MANUAL_WEEK_OVERRIDE)

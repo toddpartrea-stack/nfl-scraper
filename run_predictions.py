@@ -1,7 +1,7 @@
 import google.generativeai as genai
 import gspread
 import pandas as pd
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone
 import time
 import re
 import os
@@ -47,7 +47,6 @@ def get_out_players_set(depth_chart_df):
     return {normalize_player_name(name) for name in out_players_df['Player']}
 
 def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out_players_set, pos_config):
-    # This function remains the same as before
     if stats_df.empty or depth_chart_df.empty: return pd.DataFrame()
     player_col = next((c for c in stats_df.columns if 'Player' in c), None)
     if not player_col: return pd.DataFrame()
@@ -81,7 +80,6 @@ def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out
     return merged_df[final_columns_exist]
 
 def get_historical_stats(current_roster_df, team_abbr, historical_df):
-    # This function remains the same as before
     if historical_df.empty or current_roster_df.empty: return pd.DataFrame()
     player_col_hist = next((c for c in historical_df.columns if 'Player' in c), None)
     player_col_curr = next((c for c in current_roster_df.columns if 'Player' in c), None)
@@ -119,7 +117,6 @@ def find_or_create_row(worksheet, away_team, home_team, kickoff_str):
                 print(f"    -> Found matching row: {i}")
                 return i
     print(f"    -> No match found. Creating new row...")
-    # New row has fewer placeholders because we removed a column
     worksheet.append_row([away_team, home_team, kickoff_str, '', '', '', '', ''])
     return len(all_sheet_data) + 1
 
@@ -176,8 +173,7 @@ def main():
     schedule_df['datetime'] = naive_datetime.dt.tz_localize(eastern_tz, ambiguous='infer').dt.tz_convert('UTC')
     schedule_df.dropna(subset=['datetime'], inplace=True)
 
-    # --- NEW: WEEKLY SCHEDULE LOGIC ---
-    # Tuesday (weekday() == 1) is for updating results. Other days are for predictions.
+    # --- WEEKLY SCHEDULE LOGIC ---
     if now_eastern.weekday() == 1:
         # --- RESULTS-ONLY MODE ---
         print("\n--- TUESDAY: RUNNING IN RESULTS-ONLY MODE ---")
@@ -187,22 +183,21 @@ def main():
 
         games_to_update = schedule_df[schedule_df['Week'] == last_week_number]
         
-        # Open the prediction sheet to update winner/score
         pred_sheet_name = f"Week_{last_week_number}_Predictions"
         try:
             worksheet_pred = spreadsheet.worksheet(pred_sheet_name)
         except gspread.WorksheetNotFound:
             print(f"  -> Prediction sheet for Week {last_week_number} not found. Nothing to update.")
+            hide_data_sheets(spreadsheet)
             return
 
-        # Create/Clear the new dedicated stats sheet
         stats_sheet_name = f"Week_{last_week_number}_Actual_Stats"
         try:
             worksheet_stats = spreadsheet.worksheet(stats_sheet_name)
             worksheet_stats.clear()
             print(f"  -> Cleared existing sheet: '{stats_sheet_name}'")
         except gspread.WorksheetNotFound:
-            worksheet_stats = spreadsheet.add_worksheet(title=stats_sheet_name, rows=1, cols=15)
+            worksheet_stats = spreadsheet.add_worksheet(title=stats_sheet_name, rows=100, cols=20)
             print(f"  -> Created new sheet: '{stats_sheet_name}'")
         
         stats_headers = ["Matchup", "Player", "PassCmp", "PassAtt", "PassYds", "PassTD", "RushAtt", "RushYds", "RushTD", "RecTgt", "Rec", "RecYds", "RecTD"]
@@ -210,8 +205,7 @@ def main():
         worksheet_stats.freeze(rows=1)
 
         for index, game in games_to_update.iterrows():
-            away_team_full = game['Away Team']
-            home_team_full = game['Home Team']
+            away_team_full, home_team_full = game['Away Team'], game['Home Team']
             print(f"\n--- Updating: {away_team_full} at {home_team_full} ---")
             
             boxscore_link = game.get('Boxscore', '')
@@ -219,29 +213,31 @@ def main():
                 full_boxscore_url = "https://www.pro-football-reference.com" + boxscore_link
                 box_score_data = scrape_box_score(full_boxscore_url)
                 if box_score_data:
-                    # Update main prediction sheet
                     kickoff_display_str = game['datetime'].astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
                     row_num = find_or_create_row(worksheet_pred, away_team_full, home_team_full, kickoff_display_str)
                     scores = box_score_data['final_score'].split('-')
                     actual_winner = away_team_full if int(scores[0]) > int(scores[1]) else home_team_full
                     worksheet_pred.update(f'F{row_num}:G{row_num}', [[actual_winner, box_score_data['final_score']]])
                     
-                    # Add stats to the dedicated stats sheet
                     player_stats_df = box_score_data.get("player_stats")
                     if player_stats_df is not None and not player_stats_df.empty:
                         player_stats_df['Matchup'] = f"{away_team_full} @ {home_team_full}"
-                        # Reorder columns to match headers
                         final_stats_df = player_stats_df[[col for col in stats_headers if col in player_stats_df.columns]]
-                        # Convert to list of lists and append
                         worksheet_stats.append_rows(final_stats_df.values.tolist(), value_input_option='USER_ENTERED')
                         print(f"    -> SUCCESS: Wrote {len(final_stats_df)} player stats to '{stats_sheet_name}'")
                 else:
                     print("    -> FAILED: Could not scrape box score data.")
-            time.sleep(2)
+            time.sleep(3)
     else:
         # --- PREDICTION-ONLY MODE ---
         print("\n--- RUNNING IN PREDICTION-ONLY MODE ---")
-        current_week = int(schedule_df[schedule_df['datetime'] > now_utc]['Week'].min())
+        future_games = schedule_df[schedule_df['datetime'] > now_utc]
+        if future_games.empty:
+            print("  -> No future games found in the schedule. Exiting.")
+            hide_data_sheets(spreadsheet)
+            return
+        
+        current_week = int(future_games['Week'].min())
         print(f"  -> Generating predictions for Week {current_week}")
 
         sheet_name = f"Week_{current_week}_Predictions"
@@ -249,7 +245,8 @@ def main():
             worksheet = spreadsheet.worksheet(sheet_name)
         except gspread.WorksheetNotFound:
             headers = ["Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", "Actual Winner", "Actual Score", "Prediction Details"]
-            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1, cols=len(headers))
+            # --- FIX: Create the sheet with more than one row ---
+            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=100, cols=len(headers))
             worksheet.update([headers], 'A1')
             worksheet.freeze(rows=1)
             print(f"  -> Created and froze headers for new sheet: '{sheet_name}'")
@@ -259,25 +256,22 @@ def main():
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel('gemini-1.5-flash')
         
-        # Load all necessary dataframes for predictions
         depth_chart_df = dataframes.get('Depth_Charts', pd.DataFrame())
         if not depth_chart_df.empty: depth_chart_df['Depth'] = pd.to_numeric(depth_chart_df['Depth'], errors='coerce')
         out_players_set = get_out_players_set(depth_chart_df)
-        all_player_stats_2025 = pd.concat([dataframes.get('O_Player_Passing', pd.DataFrame()), dataframes.get('O_Player_Rushing', pd.DataFrame()), dataframes.get('O_Player_Receiving', pd.DataFrame())], ignore_index=True)
-        all_player_stats_2024 = pd.concat([dataframes.get('2024_O_Player_Passing', pd.DataFrame()), dataframes.get('2024_O_Player_Rushing', pd.DataFrame()), dataframes.get('2024_O_Player_Receiving', pd.DataFrame())], ignore_index=True)
+        all_player_stats_2025 = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']], ignore_index=True)
+        all_player_stats_2024 = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['2024_O_Player_Passing', '2024_O_Player_Rushing', '2024_O_Player_Receiving']], ignore_index=True)
         team_offense_2025 = dataframes.get('O_Team_Overall', pd.DataFrame())
 
         for index, game in this_weeks_games.iterrows():
             if game['datetime'] > now_utc:
-                away_team_full = game['Away Team']
-                home_team_full = game['Home Team']
+                away_team_full, home_team_full = game['Away Team'], game['Home Team']
                 print(f"\n--- Predicting: {away_team_full} at {home_team_full} ---")
                 
                 kickoff_display_str = game['datetime'].astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
                 row_num = find_or_create_row(worksheet, away_team_full, home_team_full, kickoff_display_str)
                 
-                home_team_abbr = full_name_to_abbr.get(home_team_full)
-                away_team_abbr = full_name_to_abbr.get(away_team_full)
+                home_team_abbr, away_team_abbr = full_name_to_abbr.get(home_team_full), full_name_to_abbr.get(away_team_full)
                 pos_config = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1}
                 home_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
                 away_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
@@ -322,7 +316,7 @@ def main():
                     print(f"    -> SUCCESS: Wrote prediction to sheet.")
                 except Exception as e:
                     print(f"    -> ERROR: Could not generate prediction: {e}")
-                time.sleep(10)
+                time.sleep(15)
 
     hide_data_sheets(spreadsheet)
     print("\n✅ Prediction script finished.")

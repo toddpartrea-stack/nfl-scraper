@@ -4,6 +4,8 @@ import gspread
 from bs4 import BeautifulSoup
 import os
 import pickle
+import re
+from io import StringIO
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 
@@ -45,34 +47,34 @@ def write_to_sheet(spreadsheet, sheet_name, dataframe):
 
 def clean_pfr_table(df):
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = ['_'.join(col).strip() for col in df.columns.values]
-    rk_col = next((col for col in df.columns if 'Rk' in col), None)
-    if rk_col:
-        df = df[df[rk_col] != 'Rk'].copy()
+        df.columns = df.columns.get_level_values(1)
+    if 'Rk' in df.columns:
+        df = df[df['Rk'] != 'Rk'].copy()
     df = df.dropna(how='all').reset_index(drop=True)
+    if 'Tm' in df.columns:
+        df = df[~df['Tm'].str.contains('AFC|NFC', na=False)]
     return df
 
 def scrape_box_score(box_score_url):
     print(f"    -> Scraping box score: {box_score_url}")
-    if not box_score_url or not isinstance(box_score_url, str) or 'boxscores' not in box_score_url:
+    if not box_score_url or 'boxscores' not in box_score_url:
         return None
     try:
-        all_tables = pd.read_html(box_score_url)
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(box_score_url, headers=headers)
+        response.raise_for_status()
+        all_tables = pd.read_html(StringIO(response.text))
         stats_df = None
         for table in all_tables:
-            if isinstance(table.columns, pd.MultiIndex):
+            if isinstance(table.columns, pd.MultiIndex) and 'Player' in table.columns.get_level_values(1):
                 stats_df = table
                 break
-        if stats_df is None:
-            print("    -> FAILED: Could not find the combined player stats table.")
-            return None
+        if stats_df is None: return None
         stats_df.columns = ['_'.join(col).strip() for col in stats_df.columns]
         stats_df = stats_df[stats_df['Unnamed: 0_level_0_Player'] != 'Player'].copy()
         key_stats = {'Unnamed: 0_level_0_Player': 'Player', 'Passing_Cmp': 'PassCmp', 'Passing_Att': 'PassAtt', 'Passing_Yds': 'PassYds', 'Passing_TD': 'PassTD', 'Rushing_Att': 'RushAtt', 'Rushing_Yds': 'RushYds', 'Rushing_TD': 'RushTD', 'Receiving_Tgt': 'RecTgt', 'Receiving_Rec': 'Rec', 'Receiving_Yds': 'RecYds', 'Receiving_TD': 'RecTD'}
         cols_to_keep = [col for col in key_stats.keys() if col in stats_df.columns]
         final_stats_df = stats_df[cols_to_keep].rename(columns=key_stats)
-        response = requests.get(box_score_url)
-        response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
         scorebox = soup.find('div', class_='scorebox')
         scores = scorebox.find_all('div', class_='score')
@@ -88,22 +90,41 @@ if __name__ == "__main__":
     print("Authenticating with Google Sheets...")
     gc = get_gspread_client()
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
+    
+    headers = {'User-Agent': 'Mozilla/5.0'}
 
-    print("\n--- Scraping PFR TEAM OFFENSE ---")
-    try:
-        url = f"https://www.pro-football-reference.com/years/{YEAR}/"
-        all_tables = pd.read_html(url)
-        team_offense_df = None
-        for table in all_tables:
-            if 'Y/P' in table.columns: # Yards per Play is a more unique identifier
-                team_offense_df = table
-                break
-        if team_offense_df is not None:
-            write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
-        else:
-            raise ValueError("Could not find the team offense stats table by looking for a 'Y/P' column.")
-    except Exception as e:
-        print(f"❌ Could not process Team Offensive Stats: {e}")
+    for stat_type in [("Offense", ""), ("Defense", "opp")]:
+        print(f"\n--- Scraping PFR TEAM {stat_type[0].upper()} ---")
+        try:
+            page_suffix = stat_type[1]
+            # --- FIX: Correctly build the URL ---
+            url = f"https://www.pro-football-reference.com/years/{YEAR}/"
+            if page_suffix:
+                url += f"{page_suffix}.htm"
+            
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            
+            # --- FIX: Use StringIO to pass HTML to pandas, as recommended ---
+            all_tables = pd.read_html(StringIO(response.text))
+            
+            target_df = None
+            column_to_find = 'PF' if stat_type[0] == "Offense" else 'PA'
+            
+            for table in all_tables:
+                # Check both single and multi-level headers
+                cols = table.columns.get_level_values(-1) if isinstance(table.columns, pd.MultiIndex) else table.columns
+                if column_to_find in cols:
+                    target_df = table
+                    break
+            
+            if target_df is not None:
+                sheet_name = "O_Team_Overall" if stat_type[0] == "Offense" else "D_Overall"
+                write_to_sheet(spreadsheet, sheet_name, clean_pfr_table(target_df))
+            else:
+                raise ValueError(f"Could not find the team {stat_type[0].lower()} stats table.")
+        except Exception as e:
+            print(f"❌ Could not process Team {stat_type[0]} Stats: {e}")
 
     print("\n--- Scraping PFR PLAYER OFFENSE ---")
     try:
@@ -119,7 +140,6 @@ if __name__ == "__main__":
     print("\n--- Scraping FootballGuys.com Depth Charts (with Status) ---")
     try:
         url = "https://www.footballguys.com/depth-charts"
-        headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.content, 'html.parser')
         team_containers = soup.find_all('div', class_='depth-chart')

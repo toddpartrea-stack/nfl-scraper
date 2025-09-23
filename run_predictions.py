@@ -19,9 +19,7 @@ YEAR = 2025
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # --- MANUAL OVERRIDE ---
-# Set this to a week number (e.g., 3) to run predictions for that week.
-# Set it back to None for normal scheduled operation.
-MANUAL_WEEK_OVERRIDE = 3
+MANUAL_WEEK_OVERRIDE = None
 
 # --- AUTHENTICATION ---
 def get_gspread_client():
@@ -347,7 +345,10 @@ def main():
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
     schedule_df.dropna(subset=['Week'], inplace=True)
     schedule_df['Week'] = schedule_df['Week'].astype(int)
+    
+    # --- FIX: Do not add the YEAR again if the 'Date' column already contains it ---
     datetime_str = schedule_df['Date'] + " " + schedule_df['Time'].str.replace('p', ' PM').str.replace('a', ' AM')
+    
     naive_datetime = pd.to_datetime(datetime_str, errors='coerce')
     schedule_df.dropna(subset=['Date', 'Time'], inplace=True)
     schedule_df['datetime'] = naive_datetime.dt.tz_localize(eastern_tz, ambiguous='infer').dt.tz_convert('UTC')

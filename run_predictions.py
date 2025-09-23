@@ -21,7 +21,7 @@ SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapi
 # --- MANUAL OVERRIDE ---
 # Set this to a week number (e.g., 3) to run predictions for that week.
 # Set it back to None for normal scheduled operation.
-MANUAL_WEEK_OVERRIDE = None
+MANUAL_WEEK_OVERRIDE = 3
 
 # --- AUTHENTICATION ---
 def get_gspread_client():

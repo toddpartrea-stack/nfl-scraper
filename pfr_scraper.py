@@ -52,12 +52,69 @@ def clean_pfr_table(df):
         df = df[df['Rk'] != 'Rk'].copy()
     df = df.dropna(how='all').reset_index(drop=True)
     if 'Tm' in df.columns:
-        df = df[~df['Tm'].str.contains('AFC|NFC', na=False)]
+        df = df[~df['Tm'].str.contains('AFC|NFC|Avg Team|League Total', na=False)]
     return df
 
+# --- START: FINAL, ROBUST scrape_box_score FUNCTION ---
 def scrape_box_score(box_score_url):
-    # This function is not called by this script, but is kept for the prediction script
-    pass
+    print(f"    -> Scraping box score: {box_score_url}")
+    if not box_score_url or 'boxscores' not in box_score_url:
+        return None
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(box_score_url, headers=headers)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Find the scorebox and parse the final score
+        scorebox = soup.find('div', class_='scorebox')
+        if not scorebox:
+            print("    -> FAILED: Could not find scorebox div.")
+            return None
+        scores = scorebox.find_all('div', class_='score')
+        if len(scores) < 2:
+            print("    -> FAILED: Could not find both team scores.")
+            return None
+        away_score, home_score = scores[0].text.strip(), scores[1].text.strip()
+        final_score = f"{away_score}-{home_score}"
+
+        # Find the hidden player stats table within the HTML comments
+        comments = soup.find_all(string=lambda text: isinstance(text, Comment))
+        table_html = None
+        for comment in comments:
+            if 'id="player_offense"' in comment:
+                table_html = comment
+                break
+        
+        if not table_html:
+            print("    -> FAILED: Could not find hidden player_offense table in comments.")
+            return None
+            
+        stats_df = pd.read_html(StringIO(table_html))[0]
+        
+        stats_df.columns = stats_df.columns.droplevel(0) # Drop the top-level header
+        stats_df = stats_df[stats_df['Player'] != 'Player'].copy() # Remove intermittent header rows
+
+        key_stats = {
+            'Player': 'Player', 'Cmp': 'PassCmp', 'Att': 'PassAtt', 'Yds': 'PassYds', 
+            'TD': 'PassTD', 'Att_2': 'RushAtt', 'Yds_2': 'RushYds', 'TD_2': 'RushTD', 
+            'Tgt': 'RecTgt', 'Rec': 'Rec', 'Yds_3': 'RecYds', 'TD_3': 'RecTD'
+        }
+        # Rename duplicate columns like 'Yds' and 'TD' to be unique before filtering
+        cols = pd.Series(stats_df.columns)
+        for dup in cols[cols.duplicated()].unique(): 
+            cols[cols[cols == dup].index.values.tolist()] = [dup + f'_{i}' if i != 0 else dup for i in range(sum(cols == dup))]
+        stats_df.columns = cols
+        
+        cols_to_keep = [col for col in key_stats.keys() if col in stats_df.columns]
+        final_stats_df = stats_df[cols_to_keep].rename(columns=key_stats)
+
+        return {"final_score": final_score, "player_stats": final_stats_df}
+    except Exception as e:
+        print(f"    -> An error occurred scraping the box score: {e}")
+        return None
+# --- END: FINAL, ROBUST scrape_box_score FUNCTION ---
 
 # --- MAIN SCRIPT FOR DAILY DATA DUMP ---
 if __name__ == "__main__":

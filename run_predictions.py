@@ -17,7 +17,7 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 YEAR = 2025
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- AUTHENTICATION & HELPERS ---
+# --- AUTHENTICATION ---
 def get_gspread_client():
     creds = None
     if os.path.exists('token.pickle'):
@@ -33,6 +33,7 @@ def get_gspread_client():
             pickle.dump(creds, token)
     return gspread.authorize(creds)
 
+# --- HELPER FUNCTIONS ---
 def normalize_player_name(name):
     if not isinstance(name, str): return ""
     name = name.lower().replace('.', '').replace("'", "")
@@ -178,10 +179,20 @@ def main():
         return
     schedule_df['Week'] = schedule_df['Week'].astype(int)
     
+    # --- START: MODIFIED DATETIME LOGIC ---
+    # Combine date and time strings to create a full, naive datetime string
     datetime_str = schedule_df['Date'] + " " + str(YEAR) + " " + schedule_df['Time'].str.replace('p', ' PM').str.replace('a', ' AM')
-    schedule_df['datetime_local'] = pd.to_datetime(datetime_str, format='%B %d %Y %I:%M %p', errors='coerce')
-    schedule_df['datetime'] = schedule_df['datetime_local'].apply(lambda dt: eastern_tz.localize(dt, is_dst=None) if pd.notnull(dt) else pd.NaT)
+    
+    # Convert string to a naive datetime object. Errors become Not a Time (NaT).
+    naive_datetime = pd.to_datetime(datetime_str, errors='coerce')
+    
+    # Localize the naive datetime to US/Eastern, then immediately convert to UTC.
+    # This makes all datetimes standardized for comparison.
+    schedule_df['datetime'] = naive_datetime.dt.tz_localize(eastern_tz, ambiguous='infer').dt.tz_convert('UTC')
+    
+    # Drop any rows where the date/time conversion failed
     schedule_df.dropna(subset=['datetime'], inplace=True)
+    # --- END: MODIFIED DATETIME LOGIC ---
 
     if now_utc.astimezone(eastern_tz).weekday() >= 2 and now_utc.astimezone(eastern_tz).hour >= 6:
         future_games = schedule_df[schedule_df['datetime'] > now_utc]
@@ -219,13 +230,16 @@ def main():
     for index, game in this_weeks_games.iterrows():
         away_team_full = game['Away Team']
         home_team_full = game['Home Team']
-        kickoff_time = game['datetime']
+        kickoff_time_utc = game['datetime'] # This is now a UTC-aware datetime object
         boxscore_link = game.get('Boxscore', '')
         
-        print(f"\n--- Processing Matchup: {away_team_full} at {home_team_full} ---")
-        row_num = find_or_create_row(worksheet, away_team_full, home_team_full, kickoff_time.strftime('%Y-%m-%d %H:%M:%S %Z'))
+        # For display in the sheet, convert the UTC time back to a more readable Eastern time string
+        kickoff_display_str = kickoff_time_utc.astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
 
-        if kickoff_time > now_utc:
+        print(f"\n--- Processing Matchup: {away_team_full} at {home_team_full} ---")
+        row_num = find_or_create_row(worksheet, away_team_full, home_team_full, kickoff_display_str)
+
+        if kickoff_time_utc > now_utc:
             print(f"  -> Predicting future game...")
             home_team_abbr = full_name_to_abbr.get(home_team_full)
             away_team_abbr = full_name_to_abbr.get(away_team_full)

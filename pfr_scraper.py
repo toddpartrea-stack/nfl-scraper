@@ -46,53 +46,77 @@ def write_to_sheet(spreadsheet, sheet_name, dataframe):
     data_to_upload = [dataframe.columns.values.tolist()] + dataframe.values.tolist()
     worksheet.update(data_to_upload, value_input_option='USER_ENTERED')
     print(f"  -> Successfully wrote {len(dataframe)} rows.")
-    
+
 def clean_pfr_table(df):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = ['_'.join(col).strip() for col in df.columns.values]
-    
+
     rk_col = next((col for col in df.columns if 'Rk' in col), None)
     if rk_col:
         df = df[df[rk_col] != 'Rk'].copy()
-        
+
     df = df.dropna(how='all').reset_index(drop=True)
     return df
 
+# --- START: REWRITTEN scrape_box_score FUNCTION ---
 def scrape_box_score(box_score_url):
     print(f"    -> Scraping box score: {box_score_url}")
     if not box_score_url or not isinstance(box_score_url, str) or 'boxscores' not in box_score_url:
         return None
     try:
-        response = requests.get(box_score_url)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text.replace('', ''), 'html.parser')
+        # --- STRATEGY 1: Use Pandas to read all tables ---
+        # pd.read_html is powerful and can often find tables even if they are in comments
+        all_tables = pd.read_html(box_score_url)
 
-        scorebox = soup.find('div', class_='scorebox')
-        away_score = scorebox.find('div', class_='scores away').text.strip()
-        home_score = scorebox.find('div', class_='scores home').text.strip()
-        final_score = f"{away_score}-{home_score}"
-
-        player_offense_table = soup.find('table', id='player_offense')
-        if player_offense_table is None:
-             return {"final_score": final_score, "player_stats": pd.DataFrame()}
+        player_stats_dfs = []
+        # Find the two player stats tables by looking for a 'Player' column header
+        for table in all_tables:
+            if isinstance(table.columns, pd.MultiIndex) and 'Player' in table.columns.get_level_values(0):
+                player_stats_dfs.append(table)
         
-        stats_df = pd.read_html(io.StringIO(str(player_offense_table)))[0]
+        if len(player_stats_dfs) < 2:
+            print("    -> FAILED: Could not find two player stats tables.")
+            return None # Could not find both team stat tables
+        
+        # Combine the two dataframes (one for each team) into one
+        stats_df = pd.concat(player_stats_dfs, ignore_index=True)
+
+        # --- Clean up the combined dataframe ---
+        # Flatten the multi-level column headers (e.g., 'Passing' 'Yds' -> 'Passing_Yds')
         stats_df.columns = ['_'.join(col).strip() for col in stats_df.columns]
+        # Remove the intermittent header rows that are included in the scrape
         stats_df = stats_df[stats_df['Player_Player'] != 'Player'].copy()
         
+        # Define the key stats we want to keep and give them simpler names
         key_stats = {
             'Player_Player': 'Player', 'Passing_Cmp': 'PassCmp', 'Passing_Att': 'PassAtt',
             'Passing_Yds': 'PassYds', 'Passing_TD': 'PassTD', 'Rushing_Att': 'RushAtt',
             'Rushing_Yds': 'RushYds', 'Rushing_TD': 'RushTD', 'Receiving_Tgt': 'RecTgt',
             'Receiving_Rec': 'Rec', 'Receiving_Yds': 'RecYds', 'Receiving_TD': 'RecTD'
         }
+        # Filter the dataframe to only keep the columns we care about
         cols_to_keep = [col for col in key_stats.keys() if col in stats_df.columns]
         final_stats_df = stats_df[cols_to_keep].rename(columns=key_stats)
+
+        # --- STRATEGY 2: Use BeautifulSoup for just the final score ---
+        response = requests.get(box_score_url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
         
+        scorebox = soup.find('div', class_='scorebox')
+        away_score_div = scorebox.find('div', class_='scores').find_next_sibling('div')
+        home_score_div = away_score_div.find_next_sibling('div')
+        away_score = away_score_div.find('div', class_='score').text.strip()
+        home_score = home_score_div.find('div', class_='score').text.strip()
+        final_score = f"{away_score}-{home_score}"
+
+        # Return all the data in the expected format
         return {"final_score": final_score, "player_stats": final_stats_df}
+
     except Exception as e:
         print(f"    -> An error occurred scraping the box score: {e}")
         return None
+# --- END: REWRITTEN scrape_box_score FUNCTION ---
 
 def scrape_schedule(year):
     print("\n--- Scraping PFR SCHEDULE ---")
@@ -101,7 +125,7 @@ def scrape_schedule(year):
         response = requests.get(url)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
-        
+
         table = soup.find('table', id='games')
         if not table:
             print("❌ Could not find schedule table.")
@@ -110,7 +134,7 @@ def scrape_schedule(year):
         rows = []
         for row in table.find('tbody').find_all('tr'):
             if row.find('th', class_='thead'): continue
-            
+
             week_cell = row.find('th', {'data-stat': 'week_num'})
             if not week_cell: continue
 
@@ -118,12 +142,12 @@ def scrape_schedule(year):
             day = row.find('td', {'data-stat': 'game_day_of_week'}).text
             date = row.find('td', {'data-stat': 'game_date'}).text
             time = row.find('td', {'data-stat': 'gametime'}).text
-            
+
             winner_cell = row.find('td', {'data-stat': 'winner'})
             loser_cell = row.find('td', {'data-stat': 'loser'})
             visitor_cell = row.find('td', {'data-stat': 'visitor_team'})
             home_cell = row.find('td', {'data-stat': 'home_team'})
-            
+
             away_team, home_team = None, None
 
             if visitor_cell and visitor_cell.text:
@@ -139,12 +163,12 @@ def scrape_schedule(year):
                 else:
                     home_team = winner
                     away_team = loser
-            
+
             if not away_team or not home_team: continue
-            
+
             boxscore_cell = row.find('td', {'data-stat': 'boxscore_word'})
             boxscore_link = boxscore_cell.find('a')['href'] if boxscore_cell and boxscore_cell.find('a') else ''
-            
+
             rows.append([week, day, date, time, away_team, home_team, boxscore_link])
 
         headers = ["Week", "Day", "Date", "Time", "Away Team", "Home Team", "Boxscore"]
@@ -171,9 +195,9 @@ if __name__ == "__main__":
         url = f"https://www.pro-football-reference.com/years/{YEAR}/"
         team_offense_df = pd.read_html(url, attrs={'id': 'team_stats'})[0]
         write_to_sheet(spreadsheet, "O_Team_Overall", clean_pfr_table(team_offense_df))
-    except Exception as e: 
+    except Exception as e:
         print(f"❌ Could not process Team Offensive Stats: {e}")
-    
+
     print("\n--- Scraping PFR PLAYER OFFENSE ---")
     try:
         passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]

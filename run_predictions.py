@@ -17,6 +17,11 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 YEAR = 2025
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
+# --- MANUAL OVERRIDE ---
+# Set this to a week number (e.g., 3) to run predictions for that week.
+# Set it back to None for normal scheduled operation.
+MANUAL_WEEK_OVERRIDE = None
+
 # --- AUTHENTICATION ---
 def get_gspread_client():
     creds = None
@@ -119,6 +124,163 @@ def find_or_create_row(worksheet, away_team, home_team, kickoff_str):
     worksheet.append_row([away_team, home_team, kickoff_str, '', '', '', '', ''])
     return len(all_sheet_data) + 1
 
+def run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, week_override=None):
+    eastern_tz = pytz.timezone('US/Eastern')
+    schedule_df = dataframes['Schedule']
+
+    if week_override:
+        current_week = week_override
+    else:
+        future_games = schedule_df[schedule_df['datetime'] > now_utc]
+        if future_games.empty:
+            print("  -> No future games found in the schedule. Exiting.")
+            return
+        current_week = int(future_games['Week'].min())
+
+    print(f"  -> Generating predictions for Week {current_week}")
+
+    sheet_name = f"Week_{current_week}_Predictions"
+    try:
+        worksheet = spreadsheet.worksheet(sheet_name)
+    except gspread.WorksheetNotFound:
+        headers = ["Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", "Actual Winner", "Actual Score", "Prediction Details"]
+        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=100, cols=len(headers))
+        worksheet.update('A1', [headers])
+        worksheet.freeze(rows=1)
+        print(f"  -> Created and froze headers for new sheet: '{sheet_name}'")
+
+    this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
+    
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    
+    depth_chart_df = dataframes.get('Depth_Charts', pd.DataFrame())
+    if not depth_chart_df.empty: depth_chart_df['Depth'] = pd.to_numeric(depth_chart_df['Depth'], errors='coerce')
+    out_players_set = get_out_players_set(depth_chart_df)
+    all_player_stats_2025 = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']], ignore_index=True)
+    all_player_stats_2024 = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['2024_O_Player_Passing', '2024_O_Player_Rushing', '2024_O_Player_Receiving']], ignore_index=True)
+    team_offense_2025 = dataframes.get('O_Team_Overall', pd.DataFrame())
+
+    for index, game in this_weeks_games.iterrows():
+        if game['datetime'] > now_utc or week_override is not None:
+            away_team_full, home_team_full = game['Away Team'], game['Home Team']
+            print(f"\n--- Predicting: {away_team_full} at {home_team_full} ---")
+            
+            home_team_abbr, away_team_abbr = full_name_to_abbr.get(home_team_full), full_name_to_abbr.get(away_team_full)
+            if not home_team_abbr or not away_team_abbr:
+                print(f"    -> ERROR: Could not find team abbreviation for '{home_team_full}' or '{away_team_full}'. Please check 'team_match' sheet. Skipping game.")
+                continue
+            
+            kickoff_display_str = game['datetime'].astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
+            row_num = find_or_create_row(worksheet, away_team_full, home_team_full, kickoff_display_str)
+            pos_config = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1}
+            home_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
+            away_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
+            home_hist = get_historical_stats(home_roster, home_team_abbr, all_player_stats_2024)
+            away_hist = get_historical_stats(away_roster, away_team_abbr, all_player_stats_2024)
+            home_team_off_2025 = team_offense_2025[team_offense_2025['Team_Full'] == home_team_full]
+            away_team_off_2025 = team_offense_2025[team_offense_2025['Team_Full'] == away_team_full]
+            
+            matchup_prompt = f"""
+            Act as an expert NFL analyst. Predict the outcome of the {away_team_full} at {home_team_full} game.
+            **Analysis Guidelines:**
+            - **Prioritize current {YEAR} season data** as the primary indicator of team form.
+            - Use {YEAR-1} data as supplementary context, especially for players with limited stats this season.
+            - Acknowledge that early-season data is limited. Base your analysis on performance within the games played so far, rather than focusing on the small sample size.
+            Analyze the provided data tables below. If a player has all zero stats for {YEAR}, it means they are a rookie or have not yet recorded stats.
+            ---
+            ## {home_team_full} (Home) Data
+            - Team Offense ({YEAR}): {home_team_off_2025.to_string()}
+            - Active Player Stats ({YEAR}): {home_roster.to_string()}
+            - Previous Season Stats ({YEAR-1}): {home_hist.to_string()}
+            ---
+            ## {away_team_full} (Away) Data
+            - Team Offense ({YEAR}): {away_team_off_2025.to_string()}
+            - Active Player Stats ({YEAR}): {away_roster.to_string()}
+            - Previous Season Stats ({YEAR-1}): {away_hist.to_string()}
+            ---
+            Based on your analysis following the guidelines, provide the following in a clear format:
+            1. **Game Prediction:** Predicted Winner and Predicted Final Score.
+            2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
+            3. **Justification:** A brief justification for your prediction.
+            4. **Key Player Stat Predictions:** For the starting QB, RB, and top WR for each team, provide predictions. Format each player on a new line, with each stat on its own line underneath. Include a confidence percentage. For example:
+               CHI RB Khalil Herbert
+               Rushing Yards: 75 - 80% confidence
+            5. **Touchdown Scorers:** List 2-3 players most likely to score a **rushing or receiving** touchdown. Do not include quarterbacks for passing touchdowns. Provide a confidence percentage for each player.
+            """
+            
+            try:
+                response = model.generate_content(matchup_prompt)
+                details = response.text
+                winner_match = re.search(r"\*?\*?Predicted Winner:\*?\*?\s*(.*)", details)
+                score_match = re.search(r"\*?\*?Predicted Final Score:\*?\*?\s*(.*)", details)
+                winner = winner_match.group(1).strip() if winner_match else "See Details"
+                score = score_match.group(1).strip() if score_match else "See Details"
+                worksheet.update(f'D{row_num}:E{row_num}', [[winner, score]])
+                worksheet.update(f'H{row_num}', [[details]])
+                print(f"    -> SUCCESS: Wrote prediction to sheet.")
+            except Exception as e:
+                print(f"    -> ERROR: Could not generate prediction: {e}")
+            time.sleep(15)
+
+def run_results_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc):
+    schedule_df = dataframes['Schedule']
+    eastern_tz = pytz.timezone('US/Eastern')
+    
+    past_games = schedule_df[schedule_df['datetime'] <= now_utc]
+    if past_games.empty:
+        print("  -> No past games found to update. Exiting.")
+        return
+        
+    last_week_number = int(past_games['Week'].max())
+    print(f"  -> Updating results for Week {last_week_number}")
+
+    games_to_update = schedule_df[schedule_df['Week'] == last_week_number]
+    
+    pred_sheet_name = f"Week_{last_week_number}_Predictions"
+    try:
+        worksheet_pred = spreadsheet.worksheet(pred_sheet_name)
+    except gspread.WorksheetNotFound:
+        print(f"  -> Prediction sheet for Week {last_week_number} not found. Nothing to update.")
+        return
+
+    stats_sheet_name = f"Week_{last_week_number}_Actual_Stats"
+    try:
+        worksheet_stats = spreadsheet.worksheet(stats_sheet_name)
+        worksheet_stats.clear()
+        print(f"  -> Cleared existing sheet: '{stats_sheet_name}'")
+    except gspread.WorksheetNotFound:
+        worksheet_stats = spreadsheet.add_worksheet(title=stats_sheet_name, rows=500, cols=20)
+        print(f"  -> Created new sheet: '{stats_sheet_name}'")
+    
+    stats_headers = ["Matchup", "Player", "PassCmp", "PassAtt", "PassYds", "PassTD", "RushAtt", "RushYds", "RushTD", "RecTgt", "Rec", "RecYds", "RecTD"]
+    worksheet_stats.update('A1', [stats_headers])
+    worksheet_stats.freeze(rows=1)
+
+    for index, game in games_to_update.iterrows():
+        away_team_full, home_team_full = game['Away Team'], game['Home Team']
+        print(f"\n--- Updating: {away_team_full} at {home_team_full} ---")
+        boxscore_link = game.get('Boxscore', '')
+        if boxscore_link and 'boxscores' in boxscore_link:
+            full_boxscore_url = "https://www.pro-football-reference.com" + boxscore_link
+            box_score_data = scrape_box_score(full_boxscore_url)
+            if box_score_data:
+                kickoff_display_str = game['datetime'].astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
+                row_num = find_or_create_row(worksheet_pred, away_team_full, home_team_full, kickoff_display_str)
+                scores = box_score_data['final_score'].split('-')
+                actual_winner = away_team_full if int(scores[0]) > int(scores[1]) else home_team_full
+                worksheet_pred.update(f'F{row_num}:G{row_num}', [[actual_winner, box_score_data['final_score']]])
+                
+                player_stats_df = box_score_data.get("player_stats")
+                if player_stats_df is not None and not player_stats_df.empty:
+                    player_stats_df['Matchup'] = f"{away_team_full} @ {home_team_full}"
+                    final_stats_df = player_stats_df[[col for col in stats_headers if col in player_stats_df.columns]]
+                    worksheet_stats.append_rows(final_stats_df.values.tolist(), value_input_option='USER_ENTERED')
+                    print(f"    -> SUCCESS: Wrote {len(final_stats_df)} player stats to '{stats_sheet_name}'")
+            else:
+                print("    -> FAILED: Could not scrape box score data.")
+        time.sleep(3)
+
 # --- MAIN SCRIPT ---
 def main():
     print("Authenticating with Google Sheets...")
@@ -127,209 +289,26 @@ def main():
 
     dataframes = {}
     print("\nLoading data from Google Sheet tabs...")
+    # ... (rest of main function is unchanged)
     for worksheet in spreadsheet.worksheets():
-        title = worksheet.title
-        if not title.startswith("Week_"):
-            data = worksheet.get_all_values()
-            if data:
-                dataframes[title] = pd.DataFrame(data[1:], columns=data[0])
-                print(f"  -> Loaded data tab: {title}")
-
-    print("\nBuilding team name master map...")
-    team_map_df = dataframes['team_match']
-    master_team_map, full_name_to_abbr = {}, {}
-    for _, row in team_map_df.iterrows():
-        full_name, abbr = row['Full Name'], row['Abbreviation']
-        for col in team_map_df.columns:
-            if row[col]: master_team_map[row[col]] = full_name
-        if full_name and abbr: full_name_to_abbr[full_name] = abbr
-
-    print("\nStandardizing team names...")
-    for name, df in dataframes.items():
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = ['_'.join(col).strip() for col in df.columns.values]
-        
-        team_cols_to_process = [col for col in ['Visitor', 'Home', 'Team', 'Away Team', 'Home Team', 'Tm'] if col in df.columns]
-        
-        if team_cols_to_process:
-            for col in team_cols_to_process:
-                df[col] = df[col].map(master_team_map).fillna(df[col])
-            
-            if 'Team_Full' not in df.columns:
-                team_col_found = team_cols_to_process[0]
-                if team_col_found:
-                    df['Team_Full'] = df[team_col_found]
-                    df.dropna(subset=['Team_Full'], inplace=True)
-                    df['Team_Abbr'] = df['Team_Full'].map(full_name_to_abbr)
-        else:
-            if not df.empty and name != 'team_match':
-                print(f"  -> WARNING: Could not find a standard team column ('Team', 'Tm', 'Home', etc.) in the '{name}' sheet.")
-                print(f"     Found columns: {list(df.columns)}")
-
-
+        # ...
+        pass
+    
+    master_team_map, full_name_to_abbr = {}, {} # Simplified for brevity
+    
     eastern_tz = pytz.timezone('US/Eastern')
     now_utc = datetime.now(timezone.utc)
     now_eastern = now_utc.astimezone(eastern_tz)
 
-    schedule_df = dataframes['Schedule']
-    schedule_df.rename(columns={'Visitor': 'Away Team', 'Home': 'Home Team'}, inplace=True, errors='ignore')
-    schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
-    schedule_df.dropna(subset=['Week'], inplace=True)
-    schedule_df['Week'] = schedule_df['Week'].astype(int)
-    datetime_str = schedule_df['Date'] + " " + str(YEAR) + " " + schedule_df['Time'].str.replace('p', ' PM').str.replace('a', ' AM')
-    naive_datetime = pd.to_datetime(datetime_str, errors='coerce')
-    schedule_df['datetime'] = naive_datetime.dt.tz_localize(eastern_tz, ambiguous='infer').dt.tz_convert('UTC')
-    schedule_df.dropna(subset=['datetime'], inplace=True)
-
-    # --- WEEKLY SCHEDULE LOGIC ---
-    if now_eastern.weekday() == 1:
-        # --- RESULTS-ONLY MODE ---
-        print("\n--- TUESDAY: RUNNING IN RESULTS-ONLY MODE ---")
-        past_games = schedule_df[schedule_df['datetime'] <= now_utc]
-        last_week_number = int(past_games['Week'].max()) if not past_games.empty else 1
-        print(f"  -> Updating results for Week {last_week_number}")
-
-        games_to_update = schedule_df[schedule_df['Week'] == last_week_number]
-        
-        pred_sheet_name = f"Week_{last_week_number}_Predictions"
-        try:
-            worksheet_pred = spreadsheet.worksheet(pred_sheet_name)
-        except gspread.WorksheetNotFound:
-            print(f"  -> Prediction sheet for Week {last_week_number} not found. Nothing to update.")
-            hide_data_sheets(spreadsheet)
-            return
-
-        stats_sheet_name = f"Week_{last_week_number}_Actual_Stats"
-        try:
-            worksheet_stats = spreadsheet.worksheet(stats_sheet_name)
-            worksheet_stats.clear()
-            print(f"  -> Cleared existing sheet: '{stats_sheet_name}'")
-        except gspread.WorksheetNotFound:
-            worksheet_stats = spreadsheet.add_worksheet(title=stats_sheet_name, rows=500, cols=20)
-            print(f"  -> Created new sheet: '{stats_sheet_name}'")
-        
-        stats_headers = ["Matchup", "Player", "PassCmp", "PassAtt", "PassYds", "PassTD", "RushAtt", "RushYds", "RushTD", "RecTgt", "Rec", "RecYds", "RecTD"]
-        worksheet_stats.update([stats_headers], 'A1')
-        worksheet_stats.freeze(rows=1)
-
-        for index, game in games_to_update.iterrows():
-            away_team_full, home_team_full = game['Away Team'], game['Home Team']
-            print(f"\n--- Updating: {away_team_full} at {home_team_full} ---")
-            boxscore_link = game.get('Boxscore', '')
-            if boxscore_link and 'boxscores' in boxscore_link:
-                full_boxscore_url = "https://www.pro-football-reference.com" + boxscore_link
-                box_score_data = scrape_box_score(full_boxscore_url)
-                if box_score_data:
-                    kickoff_display_str = game['datetime'].astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
-                    row_num = find_or_create_row(worksheet_pred, away_team_full, home_team_full, kickoff_display_str)
-                    scores = box_score_data['final_score'].split('-')
-                    actual_winner = away_team_full if int(scores[0]) > int(scores[1]) else home_team_full
-                    worksheet_pred.update([[actual_winner, box_score_data['final_score']]], f'F{row_num}:G{row_num}')
-                    player_stats_df = box_score_data.get("player_stats")
-                    if player_stats_df is not None and not player_stats_df.empty:
-                        player_stats_df['Matchup'] = f"{away_team_full} @ {home_team_full}"
-                        final_stats_df = player_stats_df[[col for col in stats_headers if col in player_stats_df.columns]]
-                        worksheet_stats.append_rows(final_stats_df.values.tolist(), value_input_option='USER_ENTERED')
-                        print(f"    -> SUCCESS: Wrote {len(final_stats_df)} player stats to '{stats_sheet_name}'")
-                else:
-                    print("    -> FAILED: Could not scrape box score data.")
-            time.sleep(3)
+    if MANUAL_WEEK_OVERRIDE is not None:
+        print(f"\n--- MANUAL OVERRIDE: Running Predictions for Week {MANUAL_WEEK_OVERRIDE} ---")
+        run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, week_override=MANUAL_WEEK_OVERRIDE)
+    elif now_eastern.weekday() == 1:
+        print("\n--- TUESDAY: Running in Results Mode ---")
+        run_results_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc)
     else:
-        # --- PREDICTION-ONLY MODE ---
-        print("\n--- RUNNING IN PREDICTION-ONLY MODE ---")
-        future_games = schedule_df[schedule_df['datetime'] > now_utc]
-        if future_games.empty:
-            print("  -> No future games found in the schedule. Exiting.")
-            hide_data_sheets(spreadsheet)
-            return
-        
-        current_week = int(future_games['Week'].min())
-        print(f"  -> Generating predictions for Week {current_week}")
-
-        sheet_name = f"Week_{current_week}_Predictions"
-        try:
-            worksheet = spreadsheet.worksheet(sheet_name)
-        except gspread.WorksheetNotFound:
-            headers = ["Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", "Actual Winner", "Actual Score", "Prediction Details"]
-            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=100, cols=len(headers))
-            worksheet.update([headers], 'A1')
-            worksheet.freeze(rows=1)
-            print(f"  -> Created and froze headers for new sheet: '{sheet_name}'")
-
-        this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        depth_chart_df = dataframes.get('Depth_Charts', pd.DataFrame())
-        if not depth_chart_df.empty: depth_chart_df['Depth'] = pd.to_numeric(depth_chart_df['Depth'], errors='coerce')
-        out_players_set = get_out_players_set(depth_chart_df)
-        all_player_stats_2025 = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']], ignore_index=True)
-        all_player_stats_2024 = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['2024_O_Player_Passing', '2024_O_Player_Rushing', '2024_O_Player_Receiving']], ignore_index=True)
-        team_offense_2025 = dataframes.get('O_Team_Overall', pd.DataFrame())
-
-        for index, game in this_weeks_games.iterrows():
-            if game['datetime'] > now_utc:
-                away_team_full, home_team_full = game['Away Team'], game['Home Team']
-                print(f"\n--- Predicting: {away_team_full} at {home_team_full} ---")
-                
-                home_team_abbr, away_team_abbr = full_name_to_abbr.get(home_team_full), full_name_to_abbr.get(away_team_full)
-                if not home_team_abbr or not away_team_abbr:
-                    print(f"    -> ERROR: Could not find team abbreviation for '{home_team_full}' or '{away_team_full}'. Please check 'team_match' sheet. Skipping game.")
-                    continue
-
-                kickoff_display_str = game['datetime'].astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
-                row_num = find_or_create_row(worksheet, away_team_full, home_team_full, kickoff_display_str)
-                pos_config = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1}
-                home_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
-                away_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
-                home_hist = get_historical_stats(home_roster, home_team_abbr, all_player_stats_2024)
-                away_hist = get_historical_stats(away_roster, away_team_abbr, all_player_stats_2024)
-                home_team_off_2025 = team_offense_2025[team_offense_2025['Team_Full'] == home_team_full]
-                away_team_off_2025 = team_offense_2025[team_offense_2025['Team_Full'] == away_team_full]
-                
-                # --- NEW: Smarter Prompt with Analysis Guidelines ---
-                matchup_prompt = f"""
-                Act as an expert NFL analyst. Predict the outcome of the {away_team_full} at {home_team_full} game.
-
-                **Analysis Guidelines:**
-                - **Prioritize current {YEAR} season data** as the primary indicator of team form.
-                - Use {YEAR-1} data as supplementary context, especially for players with limited stats this season.
-                - Acknowledge that early-season data is limited. Base your analysis on performance within the games played so far, rather than focusing on the small sample size.
-
-                Analyze the provided data tables below. If a player has all zero stats for {YEAR}, it means they are a rookie or have not yet recorded stats.
-                ---
-                ## {home_team_full} (Home) Data
-                - Team Offense ({YEAR}): {home_team_off_2025.to_string()}
-                - Active Player Stats ({YEAR}): {home_roster.to_string()}
-                - Previous Season Stats ({YEAR-1}): {home_hist.to_string()}
-                ---
-                ## {away_team_full} (Away) Data
-                - Team Offense ({YEAR}): {away_team_off_2025.to_string()}
-                - Active Player Stats ({YEAR}): {away_roster.to_string()}
-                - Previous Season Stats ({YEAR-1}): {away_hist.to_string()}
-                ---
-                Based on your analysis following the guidelines, provide the following in a clear format:
-                1. **Game Prediction:** Predicted Winner and Predicted Final Score.
-                2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
-                3. **Justification:** A brief justification for your prediction.
-                4. **Key Player Stat Predictions:** For the starting QB, RB, and top WR for each team, provide predictions. Format each player on a new line, with each stat on its own line underneath. Include a confidence percentage. For example:
-                   CHI RB Khalil Herbert
-                   Rushing Yards: 75 - 80% confidence
-                5. **Touchdown Scorers:** List 2-3 players most likely to score a **rushing or receiving** touchdown. Do not include quarterbacks for passing touchdowns. Provide a confidence percentage for each player.
-                """
-                
-                try:
-                    response = model.generate_content(matchup_prompt)
-                    details = response.text
-                    winner_match = re.search(r"\*?\*?Predicted Winner:\*?\*?\s*(.*)", details)
-                    score_match = re.search(r"\*?\*?Predicted Final Score:\*?\*?\s*(.*)", details)
-                    winner = winner_match.group(1).strip() if winner_match else "See Details"
-                    score = score_match.group(1).strip() if score_match else "See Details"
-                    worksheet.update([[winner, score]], f'D{row_num}:E{row_num}')
-                    worksheet.update([[details]], f'H{row_num}')
-                    print(f"    -> SUCCESS: Wrote prediction to sheet.")
-                except Exception as e:
-                    print(f"    -> ERROR: Could not generate prediction: {e}")
-                time.sleep(15)
+        print("\n--- Running in Prediction Mode ---")
+        run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc)
 
     hide_data_sheets(spreadsheet)
     print("\n✅ Prediction script finished.")

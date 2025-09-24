@@ -19,8 +19,6 @@ YEAR = 2025
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # --- MANUAL OVERRIDE ---
-# Set this to a week number (e.g., 3) to run predictions for that week.
-# Set it back to None for normal scheduled operation.
 MANUAL_WEEK_OVERRIDE = None
 
 # --- AUTHENTICATION ---
@@ -300,10 +298,8 @@ def main():
         if full_name and abbr: full_name_to_abbr[full_name] = abbr
     print("\nStandardizing team names...")
     for name, df in dataframes.items():
-        # First, flatten multi-index headers if they exist
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(1)
-        # Now process the flattened, simple headers
         team_cols_to_process = [col for col in ['Visitor', 'Home', 'Team', 'Tm'] if col in df.columns]
         if team_cols_to_process:
             for col in team_cols_to_process:

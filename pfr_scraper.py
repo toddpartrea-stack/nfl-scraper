@@ -63,39 +63,43 @@ def scrape_box_score(box_score_url):
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(box_score_url, headers=headers)
         response.raise_for_status()
-        
         soup = BeautifulSoup(response.content, 'html.parser')
         scorebox = soup.find('div', class_='scorebox')
         scores = scorebox.find_all('div', class_='score')
         away_score, home_score = scores[0].text.strip(), scores[1].text.strip()
         final_score = f"{away_score}-{home_score}"
 
-        all_tables = pd.read_html(StringIO(response.text))
+        comments = soup.find_all(string=lambda text: isinstance(text, Comment))
+        table_html = None
+        for comment in comments:
+            if 'id="div_player_offense"' in comment:
+                table_html = comment
+                break
+        
+        if not table_html:
+            print("    -> FAILED: Could not find hidden player_offense table.")
+            return None
+
+        all_tables = pd.read_html(StringIO(table_html))
         player_stats_dfs = []
         for table in all_tables:
             if isinstance(table.columns, pd.MultiIndex):
                 top_level_cols = table.columns.get_level_values(0)
-                if 'Passing' in top_level_cols and 'Rushing' in top_level_cols and 'Receiving' in top_level_cols:
+                if 'Passing' in top_level_cols and 'Rushing' in top_level_cols:
                     player_stats_dfs.append(table)
-        
+
         if len(player_stats_dfs) < 2:
-            print("    -> FAILED: Could not find the two player stats tables.")
+            print("    -> FAILED: Could not find two player stats tables within the hidden div.")
             return None
         
         stats_df = pd.concat(player_stats_dfs, ignore_index=True)
         stats_df.columns = stats_df.columns.droplevel(0)
         stats_df = stats_df[stats_df['Player'] != 'Player'].copy()
-
         cols = pd.Series(stats_df.columns)
         for dup in cols[cols.duplicated()].unique(): 
             cols[cols[cols == dup].index.values.tolist()] = [dup + f'_{i+1}' if i != 0 else dup for i in range(sum(cols == dup))]
         stats_df.columns = cols
-        
-        key_stats = {
-            'Player': 'Player', 'Cmp': 'PassCmp', 'Att': 'PassAtt', 'Yds': 'PassYds', 
-            'TD': 'PassTD', 'Att_1': 'RushAtt', 'Yds_1': 'RushYds', 'TD_1': 'RushTD', 
-            'Tgt': 'RecTgt', 'Rec': 'Rec', 'Yds_2': 'RecYds', 'TD_2': 'RecTD'
-        }
+        key_stats = {'Player': 'Player','Cmp': 'PassCmp','Att': 'PassAtt','Yds': 'PassYds','TD': 'PassTD','Att_1': 'RushAtt','Yds_1': 'RushYds','TD_1': 'RushTD','Tgt': 'RecTgt','Rec': 'Rec','Yds_2': 'RecYds','TD_2': 'RecTD'}
         cols_to_keep = [col for col in key_stats.keys() if col in stats_df.columns]
         final_stats_df = stats_df[cols_to_keep].rename(columns=key_stats)
         return {"final_score": final_score, "player_stats": final_stats_df}
@@ -103,46 +107,72 @@ def scrape_box_score(box_score_url):
         print(f"    -> An error occurred scraping the box score: {e}")
         return None
 
-# --- MAIN SCRIPT ---
+# --- MAIN SCRIPT FOR DAILY DATA DUMP ---
 if __name__ == "__main__":
     print("Authenticating with Google Sheets...")
     gc = get_gspread_client()
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
     headers = {'User-Agent': 'Mozilla/5.0'}
 
-    for stat_type in [("Offense", ""), ("Defense", "opp")]:
-        print(f"\n--- Scraping PFR TEAM {stat_type[0].upper()} ({YEAR}) ---")
+    for stat_type, div_id in [("Offense", "div_team_stats"), ("Defense", "div_opp_stats")]:
+        print(f"\n--- Scraping PFR TEAM {stat_type.upper()} ({YEAR}) ---")
         try:
-            page_suffix = stat_type[1]
-            url = f"https://www.pro-football-reference.com/years/{YEAR}/"
-            if page_suffix:
-                url += f"{page_suffix}.htm"
+            url_suffix = "opp.htm" if stat_type == "Defense" else ""
+            url = f"https://www.pro-football-reference.com/years/{YEAR}/{url_suffix}"
             response = requests.get(url, headers=headers)
             response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Find table by caption, which is more reliable
-            match_string = "Team-by-Team"
-            table_list = pd.read_html(StringIO(response.text), match=match_string)
+            table_html = None
+            comments = soup.find_all(string=lambda text: isinstance(text, Comment))
+            for comment in comments:
+                if div_id in comment:
+                    table_html = comment
+                    break
             
-            if table_list:
-                df = table_list[0]
-                sheet_name = "O_Team_Overall" if stat_type[0] == "Offense" else "D_Overall"
+            if table_html:
+                df = pd.read_html(StringIO(table_html))[0]
+                sheet_name = "D_Overall" if stat_type == "Defense" else "O_Team_Overall"
                 write_to_sheet(spreadsheet, sheet_name, clean_pfr_table(df))
             else:
-                raise ValueError(f"Could not find table with caption containing '{match_string}'")
+                 raise ValueError(f"Could not find the hidden table div '{div_id}'.")
         except Exception as e:
-            print(f"❌ Could not process Team {stat_type[0]} Stats for {YEAR}: {e}")
+            print(f"❌ Could not process Team {stat_type} Stats for {YEAR}: {e}")
 
-    print(f"\n--- Scraping PFR PLAYER OFFENSE ({YEAR}) ---")
+    for year in [YEAR, YEAR - 1]:
+        print(f"\n--- Scraping PFR PLAYER OFFENSE ({year}) ---")
+        prefix = "" if year == YEAR else f"{year}_"
+        try:
+            passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{year}/passing.htm")[0]
+            rushing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{year}/rushing.htm")[0]
+            receiving_df = pd.read_html(f"https://www.pro-football-reference.com/years/{year}/receiving.htm")[0]
+            write_to_sheet(spreadsheet, f"{prefix}O_Player_Passing", clean_pfr_table(passing_df))
+            write_to_sheet(spreadsheet, f"{prefix}O_Player_Rushing", clean_pfr_table(rushing_df))
+            write_to_sheet(spreadsheet, f"{prefix}O_Player_Receiving", clean_pfr_table(receiving_df))
+        except Exception as e:
+            print(f"❌ Could not process Player Offensive Stats for {year}: {e}")
+            
+    print(f"\n--- Scraping PFR TEAM DEFENSE ({YEAR - 1}) ---")
     try:
-        passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]
-        rushing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/rushing.htm")[0]
-        receiving_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/receiving.htm")[0]
-        write_to_sheet(spreadsheet, f"O_Player_Passing", clean_pfr_table(passing_df))
-        write_to_sheet(spreadsheet, f"O_Player_Rushing", clean_pfr_table(rushing_df))
-        write_to_sheet(spreadsheet, f"O_Player_Receiving", clean_pfr_table(receiving_df))
+        url = f"https://www.pro-football-reference.com/years/{YEAR - 1}/opp.htm"
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        table_html = None
+        comments = soup.find_all(string=lambda text: isinstance(text, Comment))
+        for comment in comments:
+            if 'div_opp_stats' in comment:
+                table_html = comment
+                break
+        if not table_html:
+            table_html = soup.find('table', id='opp_stats')
+        if table_html:
+            df = pd.read_html(StringIO(str(table_html)))[0]
+            write_to_sheet(spreadsheet, f"{YEAR-1}_D_Overall", clean_pfr_table(df))
+        else:
+            raise ValueError(f"Could not find the team defense stats table for {YEAR-1}.")
     except Exception as e:
-        print(f"❌ Could not process Player Offensive Stats for {YEAR}: {e}")
+        print(f"❌ Could not process Team Defense Stats for {YEAR - 1}: {e}")
 
     print("\n--- Scraping FootballGuys.com Depth Charts (with Status) ---")
     try:

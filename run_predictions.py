@@ -84,9 +84,8 @@ def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out
 
 def get_historical_stats(current_roster_df, team_abbr, historical_df):
     if historical_df.empty or current_roster_df.empty: return pd.DataFrame()
-    player_col_hist = next((c for c in historical_df.columns if 'Player' in c), None)
-    player_col_curr = next((c for c in current_roster_df.columns if 'Player' in c), None)
-    if not player_col_hist or not player_col_curr: return pd.DataFrame()
+    player_col_hist = next((c for c in historical_df.columns if 'Player' in c), 'Player')
+    player_col_curr = next((c for c in current_roster_df.columns if 'Player' in c), 'Player')
     historical_df['Player_Normalized'] = historical_df[player_col_hist].apply(normalize_player_name)
     current_roster_df['Player_Normalized'] = current_roster_df[player_col_curr].apply(normalize_player_name)
     active_players_normalized = list(current_roster_df['Player_Normalized'])
@@ -156,8 +155,9 @@ def run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, wee
     depth_chart_df = dataframes.get('Depth_Charts', pd.DataFrame())
     if not depth_chart_df.empty: depth_chart_df['Depth'] = pd.to_numeric(depth_chart_df['Depth'], errors='coerce')
     out_players_set = get_out_players_set(depth_chart_df)
-    all_player_stats_2025 = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']], ignore_index=True)
-    all_player_stats_2024 = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['2024_O_Player_Passing', '2024_O_Player_Rushing', '2024_O_Player_Receiving']], ignore_index=True)
+    
+    player_stats_2025 = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']], ignore_index=True)
+    player_stats_2024 = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['2024_O_Player_Passing', '2024_O_Player_Rushing', '2024_O_Player_Receiving']], ignore_index=True)
     team_offense_2025 = dataframes.get('O_Team_Overall', pd.DataFrame())
 
     for index, game in this_weeks_games.iterrows():
@@ -173,10 +173,10 @@ def run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, wee
             kickoff_display_str = game['datetime'].astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
             row_num = find_or_create_row(worksheet, away_team_full, home_team_full, kickoff_display_str)
             pos_config = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1}
-            home_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
-            away_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, all_player_stats_2025, out_players_set, pos_config)
-            home_hist = get_historical_stats(home_roster, home_team_abbr, all_player_stats_2024)
-            away_hist = get_historical_stats(away_roster, away_team_abbr, all_player_stats_2024)
+            home_roster = get_game_day_roster(home_team_full, home_team_abbr, depth_chart_df, player_stats_2025, out_players_set, pos_config)
+            away_roster = get_game_day_roster(away_team_full, away_team_abbr, depth_chart_df, player_stats_2025, out_players_set, pos_config)
+            home_hist = get_historical_stats(home_roster, home_team_abbr, player_stats_2024)
+            away_hist = get_historical_stats(away_roster, away_team_abbr, player_stats_2024)
             home_team_off_2025 = team_offense_2025[team_offense_2025['Team_Full'] == home_team_full]
             away_team_off_2025 = team_offense_2025[team_offense_2025['Team_Full'] == away_team_full]
             
@@ -215,8 +215,8 @@ def run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, wee
                 score_match = re.search(r"\*?\*?Predicted Final Score:\*?\*?\s*(.*)", details)
                 winner = winner_match.group(1).strip() if winner_match else "See Details"
                 score = score_match.group(1).strip() if score_match else "See Details"
-                worksheet.update(f'D{row_num}:E{row_num}', [[winner, score]])
-                worksheet.update(f'H{row_num}', [[details]])
+                worksheet.update([[winner, score]], f'D{row_num}:E{row_num}')
+                worksheet.update([[details]], f'H{row_num}')
                 print(f"    -> SUCCESS: Wrote prediction to sheet.")
             except Exception as e:
                 print(f"    -> ERROR: Could not generate prediction: {e}")
@@ -240,8 +240,10 @@ def run_results_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc):
     try:
         worksheet_pred = spreadsheet.worksheet(pred_sheet_name)
     except gspread.WorksheetNotFound:
-        print(f"  -> Prediction sheet for Week {last_week_number} not found. Nothing to update.")
-        return
+        print(f"  -> Prediction sheet for Week {last_week_number} not found. Running predictions first.")
+        run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, week_override=last_week_number)
+        worksheet_pred = spreadsheet.worksheet(pred_sheet_name)
+
 
     stats_sheet_name = f"Week_{last_week_number}_Actual_Stats"
     try:
@@ -268,7 +270,7 @@ def run_results_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc):
                 row_num = find_or_create_row(worksheet_pred, away_team_full, home_team_full, kickoff_display_str)
                 scores = box_score_data['final_score'].split('-')
                 actual_winner = away_team_full if int(scores[0]) > int(scores[1]) else home_team_full
-                worksheet_pred.update(f'F{row_num}:G{row_num}', [[actual_winner, box_score_data['final_score']]])
+                worksheet_pred.update([[actual_winner, box_score_data['final_score']]], f'F{row_num}:G{row_num}')
                 
                 player_stats_df = box_score_data.get("player_stats")
                 if player_stats_df is not None and not player_stats_df.empty:
@@ -294,7 +296,11 @@ def main():
             if not title.startswith("Week_"):
                 data = worksheet.get_all_values()
                 if data:
-                    dataframes[title] = pd.DataFrame(data[1:], columns=data[0])
+                    df = pd.DataFrame(data[1:], columns=data[0])
+                    # Flatten multi-index headers immediately after loading
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(1)
+                    dataframes[title] = df
                     print(f"  -> Loaded data tab: {title}")
     except Exception as e:
         print(f"❌ A critical error occurred while trying to read sheets from the spreadsheet: {e}")
@@ -319,9 +325,7 @@ def main():
 
     print("\nStandardizing team names...")
     for name, df in dataframes.items():
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(1)
-        team_cols_to_process = [col for col in ['Visitor', 'Home', 'Team', 'Away Team', 'Home Team', 'Tm'] if col in df.columns]
+        team_cols_to_process = [col for col in ['Visitor', 'Home', 'Team', 'Tm'] if col in df.columns]
         if team_cols_to_process:
             for col in team_cols_to_process:
                 df[col] = df[col].map(master_team_map).fillna(df[col])
@@ -331,10 +335,6 @@ def main():
                     df['Team_Full'] = df[team_col_found]
                     df.dropna(subset=['Team_Full'], inplace=True)
                     df['Team_Abbr'] = df['Team_Full'].map(full_name_to_abbr)
-        else:
-            if not df.empty and name != 'team_match':
-                print(f"  -> WARNING: Could not find a standard team column in '{name}' sheet.")
-                print(f"     Found columns: {list(df.columns)}")
     
     eastern_tz = pytz.timezone('US/Eastern')
     now_utc = datetime.now(timezone.utc)
@@ -346,7 +346,6 @@ def main():
     schedule_df.dropna(subset=['Week'], inplace=True)
     schedule_df['Week'] = schedule_df['Week'].astype(int)
     
-    # --- FIX: Do not add the YEAR again if the 'Date' column already contains it ---
     datetime_str = schedule_df['Date'] + " " + schedule_df['Time'].str.replace('p', ' PM').str.replace('a', ' AM')
     
     naive_datetime = pd.to_datetime(datetime_str, errors='coerce')

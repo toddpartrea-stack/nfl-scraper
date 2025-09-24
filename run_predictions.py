@@ -19,6 +19,8 @@ YEAR = 2025
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # --- MANUAL OVERRIDE ---
+# Set this to a week number (e.g., 3) to run predictions for that week.
+# Set it back to None for normal scheduled operation.
 MANUAL_WEEK_OVERRIDE = None
 
 # --- AUTHENTICATION ---
@@ -52,8 +54,7 @@ def get_out_players_set(depth_chart_df):
 
 def get_game_day_roster(team_full_name, team_abbr, depth_chart_df, stats_df, out_players_set, pos_config):
     if stats_df.empty or depth_chart_df.empty: return pd.DataFrame()
-    player_col = next((c for c in stats_df.columns if 'Player' in c), None)
-    if not player_col: return pd.DataFrame()
+    player_col = next((c for c in stats_df.columns if 'Player' in c), 'Player')
     team_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == team_full_name].copy()
     active_roster_players = []
     for pos, num_players in pos_config.items():
@@ -148,14 +149,11 @@ def run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, wee
         print(f"  -> Created and froze headers for new sheet: '{sheet_name}'")
 
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
-    
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel('gemini-1.5-flash')
-    
     depth_chart_df = dataframes.get('Depth_Charts', pd.DataFrame())
     if not depth_chart_df.empty: depth_chart_df['Depth'] = pd.to_numeric(depth_chart_df['Depth'], errors='coerce')
     out_players_set = get_out_players_set(depth_chart_df)
-    
     player_stats_2025 = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']], ignore_index=True)
     player_stats_2024 = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['2024_O_Player_Passing', '2024_O_Player_Rushing', '2024_O_Player_Receiving']], ignore_index=True)
     team_offense_2025 = dataframes.get('O_Team_Overall', pd.DataFrame())
@@ -164,12 +162,10 @@ def run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, wee
         if game['datetime'] > now_utc or week_override is not None:
             away_team_full, home_team_full = game['Away Team'], game['Home Team']
             print(f"\n--- Predicting: {away_team_full} at {home_team_full} ---")
-            
             home_team_abbr, away_team_abbr = full_name_to_abbr.get(home_team_full), full_name_to_abbr.get(away_team_full)
             if not home_team_abbr or not away_team_abbr:
                 print(f"    -> ERROR: Could not find team abbreviation for '{home_team_full}' or '{away_team_full}'. Please check 'team_match' sheet. Skipping game.")
                 continue
-            
             kickoff_display_str = game['datetime'].astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
             row_num = find_or_create_row(worksheet, away_team_full, home_team_full, kickoff_display_str)
             pos_config = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1}
@@ -179,7 +175,6 @@ def run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, wee
             away_hist = get_historical_stats(away_roster, away_team_abbr, player_stats_2024)
             home_team_off_2025 = team_offense_2025[team_offense_2025['Team_Full'] == home_team_full]
             away_team_off_2025 = team_offense_2025[team_offense_2025['Team_Full'] == away_team_full]
-            
             matchup_prompt = f"""
             Act as an expert NFL analyst. Predict the outcome of the {away_team_full} at {home_team_full} game.
             **Analysis Guidelines:**
@@ -207,7 +202,6 @@ def run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, wee
                Rushing Yards: 75 - 80% confidence
             5. **Touchdown Scorers:** List 2-3 players most likely to score a **rushing or receiving** touchdown. Do not include quarterbacks for passing touchdowns. Provide a confidence percentage for each player.
             """
-            
             try:
                 response = model.generate_content(matchup_prompt)
                 details = response.text
@@ -225,26 +219,20 @@ def run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, wee
 def run_results_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc):
     schedule_df = dataframes['Schedule']
     eastern_tz = pytz.timezone('US/Eastern')
-    
     past_games = schedule_df[schedule_df['datetime'] <= now_utc]
     if past_games.empty:
         print("  -> No past games found to update. Exiting.")
         return
-        
     last_week_number = int(past_games['Week'].max())
     print(f"  -> Updating results for Week {last_week_number}")
-
     games_to_update = schedule_df[schedule_df['Week'] == last_week_number]
-    
     pred_sheet_name = f"Week_{last_week_number}_Predictions"
     try:
         worksheet_pred = spreadsheet.worksheet(pred_sheet_name)
     except gspread.WorksheetNotFound:
-        print(f"  -> Prediction sheet for Week {last_week_number} not found. Running predictions first.")
+        print(f"  -> Prediction sheet for Week {last_week_number} not found. Running predictions first to create it.")
         run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc, week_override=last_week_number)
         worksheet_pred = spreadsheet.worksheet(pred_sheet_name)
-
-
     stats_sheet_name = f"Week_{last_week_number}_Actual_Stats"
     try:
         worksheet_stats = spreadsheet.worksheet(stats_sheet_name)
@@ -253,11 +241,9 @@ def run_results_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc):
     except gspread.WorksheetNotFound:
         worksheet_stats = spreadsheet.add_worksheet(title=stats_sheet_name, rows=500, cols=20)
         print(f"  -> Created new sheet: '{stats_sheet_name}'")
-    
     stats_headers = ["Matchup", "Player", "PassCmp", "PassAtt", "PassYds", "PassTD", "RushAtt", "RushYds", "RushTD", "RecTgt", "Rec", "RecYds", "RecTD"]
     worksheet_stats.update('A1', [stats_headers])
     worksheet_stats.freeze(rows=1)
-
     for index, game in games_to_update.iterrows():
         away_team_full, home_team_full = game['Away Team'], game['Home Team']
         print(f"\n--- Updating: {away_team_full} at {home_team_full} ---")
@@ -271,7 +257,6 @@ def run_results_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc):
                 scores = box_score_data['final_score'].split('-')
                 actual_winner = away_team_full if int(scores[0]) > int(scores[1]) else home_team_full
                 worksheet_pred.update([[actual_winner, box_score_data['final_score']]], f'F{row_num}:G{row_num}')
-                
                 player_stats_df = box_score_data.get("player_stats")
                 if player_stats_df is not None and not player_stats_df.empty:
                     player_stats_df['Matchup'] = f"{away_team_full} @ {home_team_full}"
@@ -282,12 +267,10 @@ def run_results_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc):
                 print("    -> FAILED: Could not scrape box score data.")
         time.sleep(3)
 
-# --- MAIN SCRIPT ---
 def main():
     print("Authenticating with Google Sheets...")
     gc = get_gspread_client()
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
-
     dataframes = {}
     print("\nLoading data from Google Sheet tabs...")
     try:
@@ -297,23 +280,16 @@ def main():
                 data = worksheet.get_all_values()
                 if data:
                     df = pd.DataFrame(data[1:], columns=data[0])
-                    # Flatten multi-index headers immediately after loading
-                    if isinstance(df.columns, pd.MultiIndex):
-                        df.columns = df.columns.get_level_values(1)
                     dataframes[title] = df
                     print(f"  -> Loaded data tab: {title}")
     except Exception as e:
-        print(f"❌ A critical error occurred while trying to read sheets from the spreadsheet: {e}")
+        print(f"❌ A critical error occurred while reading sheets: {e}")
         return
-
     required_sheets = ['Schedule', 'team_match']
     if not all(sheet in dataframes for sheet in required_sheets):
-        print("❌ CRITICAL ERROR: Could not load required data tabs.")
-        print(f"   Required tabs: {required_sheets}")
+        print("❌ CRITICAL ERROR: Could not load required tabs.")
         print(f"   Tabs found: {list(dataframes.keys())}")
-        print("   Please check that these tabs exist, are named correctly, and are not empty.")
         return
-
     print("\nBuilding team name master map...")
     team_map_df = dataframes['team_match']
     master_team_map, full_name_to_abbr = {}, {}
@@ -322,9 +298,12 @@ def main():
         for col in team_map_df.columns:
             if row[col]: master_team_map[row[col]] = full_name
         if full_name and abbr: full_name_to_abbr[full_name] = abbr
-
     print("\nStandardizing team names...")
     for name, df in dataframes.items():
+        # First, flatten multi-index headers if they exist
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(1)
+        # Now process the flattened, simple headers
         team_cols_to_process = [col for col in ['Visitor', 'Home', 'Team', 'Tm'] if col in df.columns]
         if team_cols_to_process:
             for col in team_cols_to_process:
@@ -335,19 +314,15 @@ def main():
                     df['Team_Full'] = df[team_col_found]
                     df.dropna(subset=['Team_Full'], inplace=True)
                     df['Team_Abbr'] = df['Team_Full'].map(full_name_to_abbr)
-    
     eastern_tz = pytz.timezone('US/Eastern')
     now_utc = datetime.now(timezone.utc)
     now_eastern = now_utc.astimezone(eastern_tz)
-
     schedule_df = dataframes['Schedule']
     schedule_df.rename(columns={'Visitor': 'Away Team', 'Home': 'Home Team'}, inplace=True, errors='ignore')
     schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
     schedule_df.dropna(subset=['Week'], inplace=True)
     schedule_df['Week'] = schedule_df['Week'].astype(int)
-    
     datetime_str = schedule_df['Date'] + " " + schedule_df['Time'].str.replace('p', ' PM').str.replace('a', ' AM')
-    
     naive_datetime = pd.to_datetime(datetime_str, errors='coerce')
     schedule_df.dropna(subset=['Date', 'Time'], inplace=True)
     schedule_df['datetime'] = naive_datetime.dt.tz_localize(eastern_tz, ambiguous='infer').dt.tz_convert('UTC')
@@ -363,7 +338,6 @@ def main():
     else:
         print("\n--- Running in Prediction Mode ---")
         run_prediction_mode(spreadsheet, dataframes, full_name_to_abbr, now_utc)
-
     hide_data_sheets(spreadsheet)
     print("\n✅ Prediction script finished.")
 

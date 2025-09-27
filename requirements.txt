@@ -9,3 +9,4 @@ lxml
 html5lib
 google-generativeai
 pytz
+python-dotenv

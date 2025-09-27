@@ -22,10 +22,12 @@ MANUAL_WEEK_OVERRIDE = None
 
 # --- AUTHENTICATION & HELPERS ---
 def get_gspread_client():
-    # SIMPLIFIED: gspread now finds the credentials set by the GitHub Action automatically
-    return gspread.auth.default()
+    # FINAL FIX: Bypassing the broken .auth.default() and using a direct, explicit method
+    credential_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+    if not credential_path:
+        raise ValueError("Could not find Google credentials path. The auth step in the workflow may have failed.")
+    return gspread.service_account(filename=credential_path)
 
-# ... The rest of the script is largely unchanged, but I've included the full version for completeness ...
 def get_api_data(endpoint, params):
     url = f"https://{API_HOST}/{endpoint}"
     headers = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": API_HOST}
@@ -104,7 +106,6 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
 
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
     
-    # SIMPLIFIED: Initialize Vertex AI. The project and credentials are found automatically.
     print("--- Initializing Vertex AI ---")
     vertexai.init()
     model = GenerativeModel("gemini-1.0-pro")
@@ -170,11 +171,12 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         time.sleep(5)
 
 def run_results_mode(spreadsheet, dataframes, now_utc):
-    # This entire function is unchanged
     schedule_df = dataframes['Schedule']
     eastern_tz = pytz.timezone('US/Eastern')
     past_games = schedule_df[schedule_df['datetime'] <= now_utc]
-    if past_games.empty: return
+    if past_games.empty:
+        print("  -> No past games found to update results.")
+        return
     last_week_number = int(past_games['Week'].max())
     print(f"  -> Updating results for Week {last_week_number}")
     games_to_update = schedule_df[schedule_df['Week'] == last_week_number]
@@ -182,7 +184,7 @@ def run_results_mode(spreadsheet, dataframes, now_utc):
     try:
         worksheet_pred = spreadsheet.worksheet(pred_sheet_name)
     except gspread.WorksheetNotFound:
-        print(f"  -> Prediction sheet for Week {last_week_number} not found.")
+        print(f"  -> Prediction sheet for Week {last_week_number} not found. No results to update.")
         return
     stats_sheet_name = f"Week_{last_week_number}_Actual_Stats"
     try:
@@ -215,7 +217,7 @@ def run_results_mode(spreadsheet, dataframes, now_utc):
             for team_data in game_player_stats:
                 team_name = team_data.get('team', {}).get('name')
                 for player_data in team_data.get('players', []):
-                    p_info = {'Matchup':f"{away_team_full} @ {home_team_full}",'Player':player_data.get('player',{}).get('name'),'Team':team_name,'PassYds':0,'PassTD':0,'RushYds':0,'RushTD':0,'RecYds':0,'RecTD':0}
+                    p_info = {'Matchup': f"{away_team_full} @ {home_team_full}", 'Player': player_data.get('player', {}).get('name'), 'Team': team_name, 'PassYds': 0, 'PassTD': 0, 'RushYds': 0, 'RushTD': 0, 'RecYds': 0, 'RecTD': 0}
                     for group in player_data.get('statistics', []):
                         group_name = group.get('group')
                         stats = {s['name']: s['value'] for s in group.get('statistics', [])}

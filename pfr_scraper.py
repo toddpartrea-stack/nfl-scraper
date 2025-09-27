@@ -7,12 +7,16 @@ import pickle
 import re
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
+from io import StringIO
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- CONFIGURATION ---
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
 YEAR = 2025
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-FOOTBALL_API_KEY = os.getenv('FOOTBALL_API_KEY') # Get the new API key from GitHub secrets
+FOOTBALL_API_KEY = os.getenv('FOOTBALL_API_KEY')
 
 # --- AUTHENTICATION & HELPERS ---
 def get_gspread_client():
@@ -33,7 +37,6 @@ def get_gspread_client():
 def write_to_sheet(spreadsheet, sheet_name, dataframe):
     print(f"  -> Writing data to '{sheet_name}' tab...")
     if dataframe.empty:
-        print(f"  -> Dataframe for {sheet_name} is empty, skipping write.")
         return
     try:
         worksheet = spreadsheet.worksheet(sheet_name)
@@ -45,54 +48,57 @@ def write_to_sheet(spreadsheet, sheet_name, dataframe):
     worksheet.update(data_to_upload, value_input_option='USER_ENTERED')
     print(f"  -> Successfully wrote {len(dataframe)} rows.")
 
-# --- API-Powered Functions ---
-def get_team_standings(api_key, year):
+def clean_pfr_table(df):
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(1)
+    if 'Rk' in df.columns:
+        df = df[df['Rk'] != 'Rk'].copy()
+    df = df.dropna(how='all').reset_index(drop=True)
+    if 'Tm' in df.columns:
+        df = df[~df['Tm'].str.contains('AFC|NFC|Avg Team|League Total', na=False, case=False)]
+    return df
+
+# --- MAIN SCRIPT ---
+if __name__ == "__main__":
+    print("Authenticating with Google Sheets...")
+    gc = get_gspread_client()
+    spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
+    
+    # --- API CALL FOR TEAM STATS ---
     print("\n--- Fetching Team Standings from API-Football ---")
-    url = "https://api-football-v1.p.rapidapi.com/v3/standings"
-    querystring = {"season": str(year), "league": "1"} # League ID 1 is the NFL
-    headers = {
-        "X-RapidAPI-Key": api_key,
-        "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
-    }
+    team_stats_url = "https://api-football-v1.p.rapidapi.com/v3/standings"
+    querystring = {"season": str(YEAR - 1), "league": "1"}
+    headers = {"X-RapidAPI-Key": FOOTBALL_API_KEY, "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"}
     try:
-        response = requests.get(url, headers=headers, params=querystring)
+        response = requests.get(team_stats_url, headers=headers, params=querystring)
         response.raise_for_status()
         data = response.json()['response']
-        
-        if not data:
-            print("  -> API returned no standings data.")
-            return pd.DataFrame(), pd.DataFrame()
-
-        standings_data = data[0]['league']['standings'][0]
-        
-        all_teams_stats = []
-        for team_info in standings_data:
-            all_teams_stats.append({
-                'Tm': team_info['team']['name'],
-                'W': team_info['all']['win'],
-                'L': team_info['all']['lose'],
-                'T': team_info['all']['draw'],
-                'PF': team_info['all']['goals']['for'],
-                'PA': team_info['all']['goals']['against'],
-                'Net': team_info['points'], # Using 'points' for Net, can be adjusted
-            })
-        
-        df = pd.DataFrame(all_teams_stats)
-        # Create separate dataframes for offense and defense for compatibility
-        offense_df = df[['Tm', 'W', 'L', 'T', 'PF']].copy()
-        defense_df = df[['Tm', 'PA']].copy()
-        return offense_df, defense_df
+        if data:
+            standings_data = data[0]['league']['standings'][0]
+            all_teams_stats = [{'Tm': team_info['team']['name'], 'W': team_info['all']['win'], 'L': team_info['all']['lose'], 'T': team_info['all']['draw'], 'PF': team_info['all']['goals']['for'], 'PA': team_info['all']['goals']['against']} for team_info in standings_data]
+            df = pd.DataFrame(all_teams_stats)
+            write_to_sheet(spreadsheet, "O_Team_Overall", df[['Tm', 'W', 'L', 'T', 'PF']].copy())
+            write_to_sheet(spreadsheet, "D_Overall", df[['Tm', 'PA']].copy())
     except Exception as e:
-        print(f"❌ Could not process Team Standings: {e}")
-        return pd.DataFrame(), pd.DataFrame()
+        print(f"❌ Could not process Team Standings from API: {e}")
 
-# --- Web Scraping Functions ---
-def scrape_depth_charts():
-    print("\n--- Scraping FootballGuys.com Depth Charts (with Status) ---")
+    # --- SCRAPING FOR PLAYER STATS ---
+    print(f"\n--- Scraping PFR PLAYER OFFENSE ({YEAR}) ---")
+    try:
+        passing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/passing.htm")[0]
+        rushing_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/rushing.htm")[0]
+        receiving_df = pd.read_html(f"https://www.pro-football-reference.com/years/{YEAR}/receiving.htm")[0]
+        write_to_sheet(spreadsheet, "O_Player_Passing", clean_pfr_table(passing_df))
+        write_to_sheet(spreadsheet, "O_Player_Rushing", clean_pfr_table(rushing_df))
+        write_to_sheet(spreadsheet, "O_Player_Receiving", clean_pfr_table(receiving_df))
+    except Exception as e:
+        print(f"❌ Could not process Player Offensive Stats for {YEAR}: {e}")
+
+    # --- SCRAPING FOR DEPTH CHARTS ---
+    print("\n--- Scraping FootballGuys.com Depth Charts ---")
     try:
         url = "https://www.footballguys.com/depth-charts"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
         soup = BeautifulSoup(response.content, 'html.parser')
         team_containers = soup.find_all('div', class_='depth-chart')
         all_players = []
@@ -113,32 +119,9 @@ def scrape_depth_charts():
                             status = status_match.group(1) if status_match else 'Healthy'
                             all_players.append({'Team': team_name, 'Position': position, 'Depth': i + 1, 'Player': clean_name, 'Status': status})
         if all_players:
-            return pd.DataFrame(all_players)
+            depth_chart_df = pd.DataFrame(all_players)
+            write_to_sheet(spreadsheet, "Depth_Charts", depth_chart_df)
     except Exception as e:
         print(f"❌ Could not process Depth Charts: {e}")
-    return pd.DataFrame()
 
-# --- MAIN SCRIPT ---
-if __name__ == "__main__":
-    if not FOOTBALL_API_KEY:
-        print("❌ ERROR: FOOTBALL_API_KEY secret not found. Please add it to your GitHub repository secrets.")
-    else:
-        print("Authenticating with Google Sheets...")
-        gc = get_gspread_client()
-        spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
-        
-        # Get data from the API
-        offense_df, defense_df = get_team_standings(FOOTBALL_API_KEY, YEAR)
-        
-        # Write API data to sheets
-        if not offense_df.empty:
-            write_to_sheet(spreadsheet, "O_Team_Overall", offense_df)
-        if not defense_df.empty:
-            write_to_sheet(spreadsheet, "D_Overall", defense_df)
-
-        # Scrape depth charts from the web
-        depth_chart_df = scrape_depth_charts()
-        if not depth_chart_df.empty:
-            write_to_sheet(spreadsheet, "Depth_Charts", depth_chart_df)
-
-        print("\n✅ Scraper script finished.")
+    print("\n✅ Scraper script finished.")

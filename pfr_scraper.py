@@ -1,10 +1,9 @@
-import requests
-import pandas as pd
-import gspread
 import os
 import json
 import re
 import time
+import pandas as pd
+import gspread
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
@@ -14,21 +13,15 @@ load_dotenv()
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
 CURRENT_YEAR = 2025
 PREVIOUS_YEAR = CURRENT_YEAR - 1
-
-raw_api_key = os.getenv('AMERICAN_FOOTBALL_API_KEY')
-API_KEY = raw_api_key.strip() if raw_api_key else None
+API_KEY = os.getenv('AMERICAN_FOOTBALL_API_KEY')
 API_HOST = "v1.american-football.api-sports.io"
 
 # --- AUTHENTICATION & HELPERS ---
 def get_gspread_client():
-    creds_json_str = os.getenv('GSPREAD_CREDENTIALS')
-    if not creds_json_str:
-        raise ValueError("GSPREAD_CREDENTIALS secret not found. Please follow setup instructions.")
-    
-    creds_dict = json.loads(creds_json_str)
-    client = gspread.service_account_from_dict(creds_dict)
-    return client
+    # SIMPLIFIED: gspread now finds the credentials set by the GitHub Action automatically
+    return gspread.auth.default()
 
+# ... The rest of the scraper script is unchanged ...
 def write_to_sheet(spreadsheet, sheet_name, dataframe):
     print(f"  -> Writing data to '{sheet_name}' tab...")
     if dataframe.empty:
@@ -59,7 +52,6 @@ def get_api_data(endpoint, params):
         return []
 
 def calculate_nfl_week(df):
-    """Calculates the NFL week number based on game dates, using a Thursday-Wednesday week."""
     print("  -> Calculating week numbers from game dates...")
     df['game_date'] = pd.to_datetime(df['Date'], errors='coerce')
     df.dropna(subset=['game_date'], inplace=True)
@@ -71,27 +63,23 @@ def calculate_nfl_week(df):
     else:
         season_start_date = regular_season_games['game_date'].min()
 
-    # An NFL week typically starts on Thursday. Find the Thursday of the first week.
-    # weekday() -> Monday is 0 and Sunday is 6. Thursday is 3.
     start_of_week1 = season_start_date - pd.to_timedelta(season_start_date.weekday() - 3, unit='d')
     
     def get_week(date):
         if date < start_of_week1:
-            return 0  # Assign 0 for preseason
+            return 0
         return ((date - start_of_week1).days // 7) + 1
 
     df['Week'] = df['game_date'].apply(get_week)
     df.drop(columns=['game_date'], inplace=True)
     return df
 
-
-# --- MAIN SCRIPT ---
 if __name__ == "__main__":
     if not API_KEY:
         print("❌ ERROR: AMERICAN_FOOTBALL_API_KEY secret not found.")
         exit()
 
-    print("Authenticating with Google Sheets using Service Account...")
+    print("Authenticating to Google Sheets...")
     try:
         gc = get_gspread_client()
         spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
@@ -100,46 +88,29 @@ if __name__ == "__main__":
         exit()
 
     print(f"\n--- Fetching Official Schedule from API ({CURRENT_YEAR}) ---")
+    # ... (rest of the script is identical)
     try:
         games_data = get_api_data("games", {"league": "1", "season": str(CURRENT_YEAR)})
         if games_data:
-            schedule_list = []
-            for item in games_data:
-                schedule_list.append({
-                    'GameID': item.get('game', {}).get('id'),
-                    'Week': 'N/A',
-                    'Date': item.get('game', {}).get('date', {}).get('date'),
-                    'Time': item.get('game', {}).get('date', {}).get('time'),
-                    'Away Team': item.get('teams', {}).get('away', {}).get('name'),
-                    'Home Team': item.get('teams', {}).get('home', {}).get('name')
-                })
+            schedule_list = [{'GameID': i.get('game', {}).get('id'),'Week': 'N/A','Date': i.get('game', {}).get('date', {}).get('date'),'Time': i.get('game', {}).get('date', {}).get('time'),'Away Team': i.get('teams', {}).get('away', {}).get('name'),'Home Team': i.get('teams', {}).get('home', {}).get('name')} for i in games_data]
             schedule_df = pd.DataFrame(schedule_list)
             schedule_df = calculate_nfl_week(schedule_df)
             schedule_df = schedule_df[schedule_df['Week'] > 0].copy()
             write_to_sheet(spreadsheet, "Schedule", schedule_df)
     except Exception as e:
         print(f"❌ Could not process Schedule from API: {e}")
-
     print(f"\n--- Fetching Team Standings from API ({CURRENT_YEAR}) ---")
     try:
         standings_data = get_api_data("standings", {"league": "1", "season": str(CURRENT_YEAR)})
         if standings_data:
-            all_teams_stats = []
-            for team_info in standings_data:
-                all_teams_stats.append({
-                    'Tm': team_info.get('team', {}).get('name'),
-                    'W': team_info.get('won'), 'L': team_info.get('lost'), 'T': team_info.get('ties'),
-                    'PF': team_info.get('points', {}).get('for'), 'PA': team_info.get('points', {}).get('against')
-                })
+            all_teams_stats = [{'Tm': t.get('team',{}).get('name'),'W':t.get('won'),'L':t.get('lost'),'T':t.get('ties'),'PF':t.get('points',{}).get('for'),'PA':t.get('points',{}).get('against')} for t in standings_data]
             df = pd.DataFrame(all_teams_stats)
             write_to_sheet(spreadsheet, "O_Team_Overall", df[['Tm', 'W', 'L', 'T', 'PF']].copy())
             write_to_sheet(spreadsheet, "D_Overall", df[['Tm', 'PA']].copy())
     except Exception as e:
         print(f"❌ Could not process Team Standings: {e}")
-
     for year_to_fetch in [CURRENT_YEAR, PREVIOUS_YEAR]:
         print(f"\n--- Fetching Player Stats from API ({year_to_fetch}) ---")
-        # ... The rest of this script is unchanged
         all_players_stats = []
         try:
             teams_data = get_api_data("teams", {"league": "1", "season": year_to_fetch})
@@ -147,34 +118,27 @@ if __name__ == "__main__":
             for team_id in team_ids:
                 print(f"  -> Fetching players for team ID: {team_id}")
                 player_stats_data = get_api_data("players/statistics", {"team": team_id, "season": year_to_fetch})
-                if player_stats_data:
-                    all_players_stats.extend(player_stats_data)
+                if player_stats_data: all_players_stats.extend(player_stats_data)
                 time.sleep(1.5)
-            
             if all_players_stats:
                 passing, rushing, receiving = [], [], []
                 for p_data in all_players_stats:
                     player_info = p_data.get('player', {})
                     if not p_data.get('teams'): continue
-                    
                     team_level_data = p_data['teams'][0]
                     team_info = team_level_data.get('team', {})
-                    
-                    base_stats = { 'Player': player_info.get('name'), 'Tm': team_info.get('name'), 'G': 0 }
-                    
+                    base_stats = {'Player':player_info.get('name'),'Tm':team_info.get('name'),'G':0}
                     for group in team_level_data.get('groups', []):
                         stats = {s['name']: s['value'] for s in group.get('statistics', [])}
                         if group.get('name') == 'Passing': passing.append({**base_stats, **stats})
                         elif group.get('name') == 'Rushing': rushing.append({**base_stats, **stats})
                         elif group.get('name') == 'Receiving': receiving.append({**base_stats, **stats})
-                
                 prefix = "" if year_to_fetch == CURRENT_YEAR else f"{year_to_fetch}_"
                 write_to_sheet(spreadsheet, f"{prefix}O_Player_Passing", pd.DataFrame(passing))
                 write_to_sheet(spreadsheet, f"{prefix}O_Player_Rushing", pd.DataFrame(rushing))
                 write_to_sheet(spreadsheet, f"{prefix}O_Player_Receiving", pd.DataFrame(receiving))
         except Exception as e:
             print(f"❌ Could not process Player Stats for {year_to_fetch}: {e}")
-    
     print("\n--- Scraping FootballGuys.com Depth Charts ---")
     try:
         url = "https://www.footballguys.com/depth-charts"
@@ -202,5 +166,4 @@ if __name__ == "__main__":
             write_to_sheet(spreadsheet, "Depth_Charts", pd.DataFrame(all_players))
     except Exception as e:
         print(f"❌ Could not process Depth Charts: {e}")
-
     print("\n✅ Scraper script finished.")

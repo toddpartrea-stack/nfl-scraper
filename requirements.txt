@@ -7,6 +7,6 @@ google-auth-httplib2
 google-auth-oauthlib
 lxml
 html5lib
-google-generativeai
+google-generativeai>=0.5.0
 pytz
 python-dotenv

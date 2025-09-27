@@ -7,6 +7,7 @@ import pytz
 import gspread
 import requests
 from dotenv import load_dotenv
+from datetime import datetime, timezone
 
 # NEW: Import the Vertex AI library
 import vertexai

@@ -71,14 +71,14 @@ if __name__ == "__main__":
             games_data = get_api_data("games", {"league": "1", "season": YEAR})
             if games_data:
                 schedule_list = []
-                for game in games_data:
+                for item in games_data:
                     schedule_list.append({
-                        'GameID': game['game']['id'],
-                        'Week': game['league']['round'],
-                        'Date': game['game']['date']['date'],
-                        'Time': game['game']['date']['time'],
-                        'Away Team': game['teams']['away']['name'],
-                        'Home Team': game['teams']['home']['name']
+                        'GameID': item['game']['id'],
+                        'Week': item['league']['round'],
+                        'Date': item['game']['date']['date'],
+                        'Time': item['game']['date']['time'],
+                        'Away Team': item['teams']['away']['name'],
+                        'Home Team': item['teams']['home']['name']
                     })
                 schedule_df = pd.DataFrame(schedule_list)
                 schedule_df['Week'] = schedule_df['Week'].str.replace('Week ', '', regex=False).astype(int)
@@ -92,8 +92,8 @@ if __name__ == "__main__":
             standings_data = get_api_data("standings", {"league": "1", "season": YEAR})
             if standings_data:
                 all_teams_stats = []
-                for conference_data in standings_data:
-                    for team_info in conference_data:
+                for conference in standings_data:
+                    for team_info in conference:
                         all_teams_stats.append({
                             'Tm': team_info['team']['name'],
                             'W': team_info['won'], 'L': team_info['lost'], 'T': team_info['ties'],
@@ -119,9 +119,9 @@ if __name__ == "__main__":
                     time.sleep(1.5)
                 if all_players_stats:
                     passing, rushing, receiving = [], [], []
-                    for p_data in all_players_stats:
-                        p_info = {'Player': p_data['player']['name'], 'Tm': p_data['team']['name'], 'Age': p_data['player']['age'], 'G': p_data['games']['appearences']}
-                        for group in p_data['statistics']:
+                    for p in all_players_stats:
+                        p_info = {'Player': p['player']['name'], 'Tm': p['team']['name'], 'G': p['games']['appearences']}
+                        for group in p['statistics']:
                             stats = {s['name']: s['value'] for s in group['statistics']}
                             if group['name'] == 'Passing': passing.append({**p_info, **stats})
                             elif group['name'] == 'Rushing': rushing.append({**p_info, **stats})
@@ -132,7 +132,7 @@ if __name__ == "__main__":
                     write_to_sheet(spreadsheet, f"{prefix}O_Player_Receiving", pd.DataFrame(receiving))
             except Exception as e:
                 print(f"❌ Could not process Player Stats for {year_to_fetch}: {e}")
-
+        
         # 4. Scrape Depth Charts
         print("\n--- Scraping FootballGuys.com Depth Charts ---")
         try:

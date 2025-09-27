@@ -27,10 +27,12 @@ jobs:
           echo '${{ secrets.GDRIVE_TOKEN_BASE64 }}' | base64 --decode > token.pickle
 
       - name: Run Scraper Script
-        run: python pfr_scraper.py
+        env:
+          AMERICAN_FOOTBALL_API_KEY: ${{ secrets.AMERICAN_FOOTBALL_API_KEY }}
+        run: python3 pfr_scraper.py
 
       - name: Run Prediction Script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           AMERICAN_FOOTBALL_API_KEY: ${{ secrets.AMERICAN_FOOTBALL_API_KEY }}
-        run: python run_predictions.py
+        run: python3 run_predictions.py

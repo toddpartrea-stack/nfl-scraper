@@ -12,7 +12,9 @@ load_dotenv()
 
 # --- CONFIGURATION ---
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
-YEAR = 2025
+CURRENT_YEAR = 2025
+PREVIOUS_YEAR = CURRENT_YEAR - 1
+
 raw_api_key = os.getenv('AMERICAN_FOOTBALL_API_KEY')
 API_KEY = raw_api_key.strip() if raw_api_key else None
 API_HOST = "v1.american-football.api-sports.io"
@@ -73,59 +75,60 @@ if __name__ == "__main__":
         print(f"❌ CRITICAL ERROR: Could not connect to Google Sheets. Check Service Account setup. Error: {e}")
         exit()
 
-    # 1. Get Official Schedule from API
-    print(f"\n--- Fetching Official Schedule from API ({YEAR}) ---")
+    # 1. Get Official Schedule from API for the CURRENT season
+    print(f"\n--- Fetching Official Schedule from API ({CURRENT_YEAR}) ---")
     try:
-        games_data = get_api_data("games", {"league": "1", "season": str(YEAR)})
+        games_data = get_api_data("games", {"league": "1", "season": str(CURRENT_YEAR)})
         if games_data:
-            schedule_list = [
-                {
+            schedule_list = []
+            for item in games_data:
+                schedule_list.append({
                     'GameID': item.get('game', {}).get('id'),
-                    'Week': item.get('league', {}).get('round'),
+                    'Week': item.get('league', {}).get('round', 'N/A'),
                     'Date': item.get('game', {}).get('date', {}).get('date'),
                     'Time': item.get('game', {}).get('date', {}).get('time'),
                     'Away Team': item.get('teams', {}).get('away', {}).get('name'),
                     'Home Team': item.get('teams', {}).get('home', {}).get('name')
-                } for item in games_data
-            ]
+                })
             schedule_df = pd.DataFrame(schedule_list)
-            schedule_df['Week'] = schedule_df['Week'].str.extract(r'(\d+)').fillna(0).astype(int)
+            # FIXED: Robustly extracts week number from strings like "Regular Season - Week 1" or "Week 4"
+            schedule_df['Week'] = schedule_df['Week'].str.extract(r'(\d+)', expand=False).fillna(0).astype(int)
             write_to_sheet(spreadsheet, "Schedule", schedule_df)
     except Exception as e:
         print(f"❌ Could not process Schedule from API: {e}")
 
-    # 2. Get Team Standings
-    print(f"\n--- Fetching Team Standings from API ({YEAR}) ---")
+    # 2. Get Team Standings from the CURRENT season
+    print(f"\n--- Fetching Team Standings from API ({CURRENT_YEAR}) ---")
     try:
-        standings_data = get_api_data("standings", {"league": "1", "season": str(YEAR)})
+        standings_data = get_api_data("standings", {"league": "1", "season": str(CURRENT_YEAR)})
         if standings_data:
             all_teams_stats = []
-            for conference_data in standings_data:
-                for team_info in conference_data:
-                    all_teams_stats.append({
-                        'Tm': team_info.get('team', {}).get('name'),
-                        'W': team_info.get('won'), 'L': team_info.get('lost'), 'T': team_info.get('ties'),
-                        'PF': team_info.get('points', {}).get('for'), 'PA': team_info.get('points', {}).get('against')
-                    })
+            # FIXED: Correctly parses the list of dictionaries returned by the API
+            for team_info in standings_data:
+                all_teams_stats.append({
+                    'Tm': team_info.get('team', {}).get('name'),
+                    'W': team_info.get('won'), 'L': team_info.get('lost'), 'T': team_info.get('ties'),
+                    'PF': team_info.get('points', {}).get('for'), 'PA': team_info.get('points', {}).get('against')
+                })
             df = pd.DataFrame(all_teams_stats)
             write_to_sheet(spreadsheet, "O_Team_Overall", df[['Tm', 'W', 'L', 'T', 'PF']].copy())
             write_to_sheet(spreadsheet, "D_Overall", df[['Tm', 'PA']].copy())
     except Exception as e:
         print(f"❌ Could not process Team Standings: {e}")
 
-    # 3. Get Player Stats
-    for year_to_fetch in [YEAR, YEAR - 1]:
+    # 3. Get Player Stats for CURRENT and PREVIOUS seasons for context
+    for year_to_fetch in [CURRENT_YEAR, PREVIOUS_YEAR]:
         print(f"\n--- Fetching Player Stats from API ({year_to_fetch}) ---")
         all_players_stats = []
         try:
             teams_data = get_api_data("teams", {"league": "1", "season": year_to_fetch})
-            team_ids = [team['id'] for team in teams_data]
+            team_ids = [team['id'] for team in teams_data if team] # Add check for valid team object
             for team_id in team_ids:
                 print(f"  -> Fetching players for team ID: {team_id}")
                 player_stats_data = get_api_data("players/statistics", {"team": team_id, "season": year_to_fetch})
                 if player_stats_data:
                     all_players_stats.extend(player_stats_data)
-                time.sleep(1.5)  # Rate limiting
+                time.sleep(1.5)
             
             if all_players_stats:
                 passing, rushing, receiving = [], [], []
@@ -137,14 +140,14 @@ if __name__ == "__main__":
                         elif group.get('name') == 'Rushing': rushing.append({**p_info, **stats})
                         elif group.get('name') == 'Receiving': receiving.append({**p_info, **stats})
                 
-                prefix = "" if year_to_fetch == YEAR else f"{year_to_fetch}_"
+                prefix = "" if year_to_fetch == CURRENT_YEAR else f"{year_to_fetch}_"
                 write_to_sheet(spreadsheet, f"{prefix}O_Player_Passing", pd.DataFrame(passing))
                 write_to_sheet(spreadsheet, f"{prefix}O_Player_Rushing", pd.DataFrame(rushing))
                 write_to_sheet(spreadsheet, f"{prefix}O_Player_Receiving", pd.DataFrame(receiving))
         except Exception as e:
             print(f"❌ Could not process Player Stats for {year_to_fetch}: {e}")
     
-    # 4. Scrape Depth Charts
+    # 4. Scrape Depth Charts (This is independent of season)
     print("\n--- Scraping FootballGuys.com Depth Charts ---")
     try:
         url = "https://www.footballguys.com/depth-charts"

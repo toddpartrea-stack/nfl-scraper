@@ -65,7 +65,7 @@ if __name__ == "__main__":
         gc = get_gspread_client()
         spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
 
-        # 1. Get Official Schedule from API (replaces static sheet)
+        # 1. Get Official Schedule from API
         print(f"\n--- Fetching Official Schedule from API ({YEAR}) ---")
         try:
             games_data = get_api_data("games", {"league": "1", "season": YEAR})
@@ -73,36 +73,39 @@ if __name__ == "__main__":
                 schedule_list = []
                 for game in games_data:
                     schedule_list.append({
-                        'GameID': game['id'],
+                        'GameID': game['game']['id'],
                         'Week': game['league']['round'],
-                        'Date': game['date']['date'],
-                        'Time': game['date']['time'],
+                        'Date': game['game']['date']['date'],
+                        'Time': game['game']['date']['time'],
                         'Away Team': game['teams']['away']['name'],
                         'Home Team': game['teams']['home']['name']
                     })
                 schedule_df = pd.DataFrame(schedule_list)
-                # Clean up the 'Week' column
                 schedule_df['Week'] = schedule_df['Week'].str.replace('Week ', '', regex=False).astype(int)
                 write_to_sheet(spreadsheet, "Schedule", schedule_df)
         except Exception as e:
             print(f"❌ Could not process Schedule from API: {e}")
 
-        # 2. Get Team Standings (Offense/Defense)
+        # 2. Get Team Standings
         print(f"\n--- Fetching Team Standings from API ({YEAR}) ---")
         try:
             standings_data = get_api_data("standings", {"league": "1", "season": YEAR})
             if standings_data:
                 all_teams_stats = []
-                for conference in standings_data:
-                    for team_info in conference:
-                        all_teams_stats.append({'Tm': team_info['team']['name'], 'W': team_info['won'], 'L': team_info['lost'], 'T': team_info['drawn'], 'PF': team_info['points']['for'], 'PA': team_info['points']['against']})
+                for conference_data in standings_data:
+                    for team_info in conference_data:
+                        all_teams_stats.append({
+                            'Tm': team_info['team']['name'],
+                            'W': team_info['won'], 'L': team_info['lost'], 'T': team_info['ties'],
+                            'PF': team_info['points']['for'], 'PA': team_info['points']['against']
+                        })
                 df = pd.DataFrame(all_teams_stats)
                 write_to_sheet(spreadsheet, "O_Team_Overall", df[['Tm', 'W', 'L', 'T', 'PF']].copy())
                 write_to_sheet(spreadsheet, "D_Overall", df[['Tm', 'PA']].copy())
         except Exception as e:
             print(f"❌ Could not process Team Standings: {e}")
 
-        # 3. Get Player Stats for current and previous year
+        # 3. Get Player Stats
         for year_to_fetch in [YEAR, YEAR - 1]:
             print(f"\n--- Fetching Player Stats from API ({year_to_fetch}) ---")
             all_players_stats = []
@@ -116,13 +119,13 @@ if __name__ == "__main__":
                     time.sleep(1.5)
                 if all_players_stats:
                     passing, rushing, receiving = [], [], []
-                    for p in all_players_stats:
-                        p_info = {'Player': p['player']['name'], 'Tm': p['team']['name'], 'Age': p['player']['age'], 'G': p['games']['appearences']}
-                        for group in p['statistics']:
-                            stats = {k: v for k, v in group['statistics'].items() if v is not None}
-                            if group['group'] == 'Passing': passing.append({**p_info, **stats})
-                            elif group['group'] == 'Rushing': rushing.append({**p_info, **stats})
-                            elif group['group'] == 'Receiving': receiving.append({**p_info, **stats})
+                    for p_data in all_players_stats:
+                        p_info = {'Player': p_data['player']['name'], 'Tm': p_data['team']['name'], 'Age': p_data['player']['age'], 'G': p_data['games']['appearences']}
+                        for group in p_data['statistics']:
+                            stats = {s['name']: s['value'] for s in group['statistics']}
+                            if group['name'] == 'Passing': passing.append({**p_info, **stats})
+                            elif group['name'] == 'Rushing': rushing.append({**p_info, **stats})
+                            elif group['name'] == 'Receiving': receiving.append({**p_info, **stats})
                     prefix = "" if year_to_fetch == YEAR else f"{year_to_fetch}_"
                     write_to_sheet(spreadsheet, f"{prefix}O_Player_Passing", pd.DataFrame(passing))
                     write_to_sheet(spreadsheet, f"{prefix}O_Player_Rushing", pd.DataFrame(rushing))
@@ -133,8 +136,29 @@ if __name__ == "__main__":
         # 4. Scrape Depth Charts
         print("\n--- Scraping FootballGuys.com Depth Charts ---")
         try:
-            # (This section is unchanged and correct)
-            pass
+            url = "https://www.footballguys.com/depth-charts"
+            response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+            soup = BeautifulSoup(response.content, 'html.parser')
+            team_containers = soup.find_all('div', class_='depth-chart')
+            all_players = []
+            for container in team_containers:
+                team_name_tag = container.find('span', class_='team-header')
+                if team_name_tag:
+                    team_name = team_name_tag.text.strip()
+                    position_items = container.find_all('li')
+                    for item in position_items:
+                        pos_label_tag = item.find('span', class_='pos-label')
+                        if pos_label_tag:
+                            position = pos_label_tag.text.replace(':', '').strip()
+                            player_tags = item.find_all(['a', 'span'], class_='player')
+                            for i, player_tag in enumerate(player_tags):
+                                player_text = player_tag.text.strip()
+                                clean_name = re.sub(r'\s+\([A-Z-]+\)$', '', player_text).strip()
+                                status_match = re.search(r'\(([A-Z-]+)\)$', player_text)
+                                status = status_match.group(1) if status_match else 'Healthy'
+                                all_players.append({'Team': team_name, 'Position': position, 'Depth': i + 1, 'Player': clean_name, 'Status': status})
+            if all_players:
+                write_to_sheet(spreadsheet, "Depth_Charts", pd.DataFrame(all_players))
         except Exception as e:
             print(f"❌ Could not process Depth Charts: {e}")
 

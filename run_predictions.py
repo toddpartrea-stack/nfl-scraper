@@ -86,9 +86,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         current_week = week_override
     else:
         future_games = schedule_df[schedule_df['datetime'] > now_utc]
-        if future_games.empty: 
-            print("  -> No future games found in the schedule. Exiting.")
-            return
+        if future_games.empty: return
         current_week = int(future_games['Week'].min())
 
     print(f"  -> Generating predictions for Week {current_week}")
@@ -214,7 +212,7 @@ def run_results_mode(spreadsheet, dataframes, now_utc):
         row_num = find_or_create_row(worksheet_pred, away_team_full, home_team_full, kickoff_display_str)
         worksheet_pred.update(f'F{row_num}:G{row_num}', [[actual_winner, final_score]])
         
-        player_stats_data = get_api_data("games/statistics/players", {"game": game_id})
+        player_stats_data = get_api_data("players/statistics", {"game": game_id})
         if player_stats_data:
             stats_list = []
             for team_stats in player_stats_data:

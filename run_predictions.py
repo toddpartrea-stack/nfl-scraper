@@ -53,8 +53,7 @@ def find_or_create_row(worksheet, away_team, home_team, kickoff_str):
     for i, row in enumerate(all_sheet_data[1:], start=2):
         if row and len(row) > 1 and row[0].strip() == away_team and row[1].strip() == home_team:
             return i
-    # Append placeholders for all new columns
-    worksheet.append_row([away_team, home_team, kickoff_str] + [''] * 19)
+    worksheet.append_row([away_team, home_team, kickoff_str, '', '', ''])
     return len(all_sheet_data) + 1
 
 def hide_data_sheets(spreadsheet):
@@ -67,12 +66,6 @@ def hide_data_sheets(spreadsheet):
         else:
             try: sheet.hide()
             except Exception: pass
-
-def clean_json_response(text):
-    match = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
-    if match:
-        return match.group(1)
-    return text.strip()
 
 def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     eastern_tz = pytz.timezone('US/Eastern')
@@ -98,20 +91,9 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         worksheet.clear()
         time.sleep(1)
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=100, cols=22)
+        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=100, cols=8)
     
-    # UPGRADED: New headers for the detailed dashboard output
-    headers = [
-        "Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", 
-        "Confidence", "Justification", "Anytime TD Scorer",
-        "Away QB Name", "Away QB Yds", "Away QB TDs", "Away QB INTs",
-        "Home QB Name", "Home QB Yds", "Home QB TDs", "Home QB INTs",
-        "Away Top RB Name", "Away RB Yds", "Away RB TDs",
-        "Home Top RB Name", "Home RB Yds", "Home RB TDs",
-        "Away Top WR Name", "Away WR Yds", "Away WR TDs",
-        "Home Top WR Name", "Home WR Yds", "Home WR TDs",
-        "Actual Winner", "Actual Score"
-    ]
+    headers = ["Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", "Prediction Analysis", "Actual Winner", "Actual Score"]
     worksheet.update('A1', [headers])
     worksheet.freeze(rows=1)
 
@@ -119,7 +101,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     
     print("--- Initializing Vertex AI ---")
     vertexai.init()
-    model = GenerativeModel("gemini-2.5-pro") # DO NOT CHANGE
+    model = GenerativeModel("gemini-1.5-flash")
     
     depth_chart_df = dataframes.get('Depth_Charts', pd.DataFrame())
     player_stats_current = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving'] if name in dataframes], ignore_index=True)
@@ -139,7 +121,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         kickoff_display_str = game['datetime'].astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
         row_num = find_or_create_row(worksheet, away_team_full, home_team_full, kickoff_display_str)
         
-        pos_config = {'QB': 1, 'RB': 1, 'WR': 1, 'TE': 1} # Get top 1 at each skill position
+        pos_config = {'QB': 1, 'RB': 1, 'WR': 1, 'TE': 1}
         home_roster_stats = get_game_day_roster(home_team_full, player_stats_current, depth_chart_df, pos_config)
         away_roster_stats = get_game_day_roster(away_team_full, player_stats_current, depth_chart_df, pos_config)
         home_hist_stats = player_stats_previous[player_stats_previous['Player'].isin(home_roster_stats['Player'])]
@@ -147,73 +129,67 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         home_team_stats = team_offense_df[team_offense_df['Team_Full'] == home_team_full]
         away_team_stats = team_offense_df[team_offense_df['Team_Full'] == away_team_full]
         
-        # ### --- UPGRADE #1: THE NEW HYBRID PROMPT --- ###
+        # ### --- UPGRADED PROMPT WITH LIKELIHOOD --- ###
         matchup_prompt = f"""
-        You are an expert sports analyst and data scientist with a knack for accurate predictions. Your goal is to predict the outcome of an NFL game and key player performances by synthesizing the provided data.
+        You are an expert sports analyst and gambler with a deep understanding of NFL data. Your task is to provide a detailed prediction analysis for an upcoming game.
 
-        Analyze the matchup between the {away_team_full} (Away) and {home_team_full} (Home).
+        Analyze the matchup between the {away_team_full} (Away) and {home_team_full} (Home) using the provided data.
 
         ## Data for Analysis:
         ### {home_team_full} (Home)
         - **Team Standings ({YEAR}):** {home_team_stats.to_string()}
         - **Top Player Stats ({YEAR}):** {home_roster_stats.to_string()}
-        - **Top Player Historical Stats ({YEAR-1}):** {home_hist_stats.to_string()}
         ---
         ### {away_team_full} (Away)
         - **Team Standings ({YEAR}):** {away_team_stats.to_string()}
         - **Top Player Stats ({YEAR}):** {away_roster_stats.to_string()}
-        - **Top Player Historical Stats ({YEAR-1}):** {away_hist_stats.to_string()}
         ---
-        Based on your analysis, provide your complete response ONLY as a single, valid JSON object.
-        The JSON object must have the following keys:
-        - "predicted_winner": The full team name of the predicted winner.
-        - "predicted_score": The final score as a string, e.g., "27-24".
-        - "confidence_percent": Your confidence in the prediction as an integer (1-100).
-        - "justification": A concise, expert-level summary explaining the key reasons for your decision.
-        - "player_predictions": An object containing stat predictions for the top QB, RB, and WR for each team.
-        - "anytime_td_scorer": The name of the player you believe is most likely to score a touchdown in the game.
+        Based on your analysis, provide your complete response as a single block of markdown-formatted text. Your response must follow this structure exactly, including all asterisks and numbering:
 
-        The "player_predictions" object must contain these nested objects: "home_qb", "away_qb", "home_top_rb", "away_top_rb", "home_top_wr", "away_top_wr".
-        Each of these objects must contain the player's "name" and their predicted stats for the game (e.g., "pass_yds", "pass_tds", "pass_ints", "rush_yds", "rush_tds", "rec_yds", "rec_tds").
+        **1. Game Prediction:**
+        ***Predicted Winner:** [Team Name]
+        ***Predicted Final Score:** [Team A Score] - [Team B Score]
+
+        **2. Key Player Stat Predictions:**
+        ***[Home Team QB Name]:**
+        ** Passing Yards:** [Yards] (Likelihood: [Percent])
+        ** Rushing Yards:** [Yards] (Likelihood: [Percent])
+        ***[Away Team QB Name]:**
+        ** Passing Yards:** [Yards] (Likelihood: [Percent])
+        ** Rushing Yards:** [Yards] (Likelihood: [Percent])
+        ***[Home Team Lead RB Name]:**
+        ** Rushing Yards:** [Yards] (Likelihood: [Percent])
+        ***[Away Team Lead RB Name]:**
+        ** Rushing Yards:** [Yards] (Likelihood: [Percent])
+        ***[Home Team Lead WR Name]:**
+        ** Receiving Yards:** [Yards] (Likelihood: [Percent])
+        ***[Away Team Lead WR Name]:**
+        ** Receiving Yards:** [Yards] (Likelihood: [Percent])
+
+        **3. Touchdown Scorers:**
+        ** [Player Name 1] ([Position])
+        ** [Player Name 2] ([Position])
+
+        **4. Justification:**
+        [Your concise, expert-level summary explaining the key reasons for your decision, referencing specific data points or player matchups.]
         """
         try:
             response = model.generate_content(matchup_prompt)
-            cleaned_response = clean_json_response(response.text)
-            pred_json = json.loads(cleaned_response)
+            
+            prediction_text = response.text
+            
+            winner_match = re.search(r"Predicted Winner:\s*\*\*(.*?)\*\*", prediction_text)
+            score_match = re.search(r"Predicted Final Score:\s*\*\*(.*?)\*\*", prediction_text)
+            
+            winner = winner_match.group(1).strip() if winner_match else "N/A"
+            score = score_match.group(1).strip() if score_match else "N/A"
 
-            # ### --- UPGRADE #2: PARSING THE DETAILED JSON INTO SEPARATE COLUMNS --- ###
-            # Top-level predictions
-            winner = pred_json.get("predicted_winner", "N/A")
-            score = pred_json.get("predicted_score", "N/A")
-            confidence = f"{pred_json.get('confidence_percent', 'N/A')}%"
-            justification = pred_json.get("justification", "N/A")
-            anytime_td = pred_json.get("anytime_td_scorer", "N/A")
-
-            # Nested player predictions
-            p_preds = pred_json.get("player_predictions", {})
-            away_qb = p_preds.get("away_qb", {}); home_qb = p_preds.get("home_qb", {})
-            away_rb = p_preds.get("away_top_rb", {}); home_rb = p_preds.get("home_top_rb", {})
-            away_wr = p_preds.get("away_top_wr", {}); home_wr = p_preds.get("home_top_wr", {})
-
-            # Create the list of values in the correct order for the sheet
-            prediction_row_data = [
-                winner, score, confidence, justification, anytime_td,
-                away_qb.get("name", "N/A"), away_qb.get("pass_yds", 0), away_qb.get("pass_tds", 0), away_qb.get("pass_ints", 0),
-                home_qb.get("name", "N/A"), home_qb.get("pass_yds", 0), home_qb.get("pass_tds", 0), home_qb.get("pass_ints", 0),
-                away_rb.get("name", "N/A"), away_rb.get("rush_yds", 0), away_rb.get("rush_tds", 0),
-                home_rb.get("name", "N/A"), home_rb.get("rush_yds", 0), home_rb.get("rush_tds", 0),
-                away_wr.get("name", "N/A"), away_wr.get("rec_yds", 0), away_wr.get("rec_tds", 0),
-                home_wr.get("name", "N/A"), home_wr.get("rec_yds", 0), home_wr.get("rec_tds", 0)
-            ]
-
-            # Update the entire range of prediction cells at once
-            worksheet.update(f'D{row_num}', [prediction_row_data])
-            print(f"    -> SUCCESS: Wrote detailed prediction for {away_team_full} vs {home_team_full}")
+            worksheet.update(f'D{row_num}:F{row_num}', [[winner, score, prediction_text]])
+            print(f"    -> SUCCESS: Wrote formatted prediction for {away_team_full} vs {home_team_full}")
         except Exception as e:
             print(f"    -> ERROR: Could not generate or parse prediction: {e}")
         time.sleep(5)
 
-# The run_results_mode and main functions are unchanged and included for completeness
 def run_results_mode(spreadsheet, dataframes, now_utc):
     schedule_df = dataframes['Schedule']
     eastern_tz = pytz.timezone('US/Eastern')
@@ -240,17 +216,15 @@ def run_results_mode(spreadsheet, dataframes, now_utc):
     stats_headers = ["Matchup", "Player", "Team", "PassYds", "PassTD", "RushYds", "RushTD", "RecYds", "RecTD"]
     worksheet_stats.update('A1', [stats_headers])
     worksheet_stats.freeze(rows=1)
-    
-    # Locate the "Actual Winner" column by header name for robustness
-    pred_headers = worksheet_pred.row_values(1)
+
     try:
+        pred_headers = worksheet_pred.row_values(1)
         actual_winner_col_index = pred_headers.index("Actual Winner") + 1
         actual_score_col_index = pred_headers.index("Actual Score") + 1
-    except ValueError:
-        print("  -> Could not find 'Actual Winner'/'Actual Score' columns. Appending them.")
-        worksheet_pred.update('AC1:AD1', [['Actual Winner', 'Actual Score']])
-        actual_winner_col_index = 29
-        actual_score_col_index = 30
+    except (ValueError, IndexError):
+        worksheet_pred.update('G1:H1', [['Actual Winner', 'Actual Score']])
+        actual_winner_col_index = 7
+        actual_score_col_index = 8
         
     all_player_stats_for_week = []
     for index, game in games_to_update.iterrows():
@@ -268,11 +242,8 @@ def run_results_mode(spreadsheet, dataframes, now_utc):
             actual_winner = away_team_full
         kickoff_display_str = game['datetime'].astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
         row_num = find_or_create_row(worksheet_pred, away_team_full, home_team_full, kickoff_display_str)
-
-        # Use gspread's col number to update cells
         worksheet_pred.update_cell(row_num, actual_winner_col_index, actual_winner)
         worksheet_pred.update_cell(row_num, actual_score_col_index, final_score)
-
         game_player_stats = get_api_data("games/statistics/players", {"id": game_id})
         if game_player_stats:
             for team_data in game_player_stats:

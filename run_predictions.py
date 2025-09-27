@@ -10,7 +10,6 @@ import pytz
 import requests
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
-from io import StringIO
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -137,9 +136,8 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         matchup_prompt = f"""
         Act as an expert NFL analyst. Predict the outcome of the {away_team_full} at {home_team_full} game.
         **Analysis Guidelines:**
-        - **Prioritize current {YEAR} season data** as the primary indicator of team form.
+        - Prioritize current {YEAR} season data as the primary indicator of team form.
         - Use {YEAR-1} data as supplementary context for players.
-        - Acknowledge that early-season data is limited. Base your analysis on performance within the games played so far.
         Analyze the provided data tables below.
         ---
         ## {home_team_full} (Home) Data
@@ -152,7 +150,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         - Active Player Stats ({YEAR}): {away_roster.to_string()}
         - Previous Season Stats ({YEAR-1}): {away_hist_stats.to_string()}
         ---
-        Based on your analysis following the guidelines, provide the following in a clear format:
+        Based on your analysis, provide the following in a clear format:
         1. **Game Prediction:** Predicted Winner and Predicted Final Score.
         2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
         3. **Justification:** A brief justification for your prediction.
@@ -186,7 +184,7 @@ def run_results_mode(spreadsheet, dataframes, now_utc):
     try:
         worksheet_pred = spreadsheet.worksheet(pred_sheet_name)
     except gspread.WorksheetNotFound:
-        print(f"  -> Prediction sheet for Week {last_week_number} not found. Running predictions first to create it.")
+        print(f"  -> Prediction sheet for Week {last_week_number} not found. Running predictions first.")
         run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=last_week_number)
         worksheet_pred = spreadsheet.worksheet(pred_sheet_name)
 

@@ -10,7 +10,6 @@ jobs:
   run-pipeline:
     runs-on: ubuntu-latest
     
-    # Add permissions for the new authentication action
     permissions:
       contents: 'read'
       id-token: 'write'
@@ -19,7 +18,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v3
 
-      # NEW: Official Google Cloud authentication step
       - name: Authenticate to Google Cloud
         id: auth
         uses: 'google-github-actions/auth@v2'
@@ -31,17 +29,15 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Install dependencies with no cache
+        run: pip install --no-cache-dir -r requirements.txt
 
       - name: Run Scraper Script
         env:
-          # The auth action handles credentials now, we only need the API key
           AMERICAN_FOOTBALL_API_KEY: ${{ secrets.AMERICAN_FOOTBALL_API_KEY }}
         run: python3 pfr_scraper.py
 
       - name: Run Prediction Script
         env:
           AMERICAN_FOOTBALL_API_KEY: ${{ secrets.AMERICAN_FOOTBALL_API_KEY }}
-          # The auth action handles all Google credentials
         run: python3 run_predictions.py

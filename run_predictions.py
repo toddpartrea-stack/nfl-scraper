@@ -10,7 +10,6 @@ import pytz
 import requests
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
-from io import StringIO
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -90,9 +89,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         current_week = week_override
     else:
         future_games = schedule_df[schedule_df['datetime'] > now_utc]
-        if future_games.empty: 
-            print("  -> No future games found in the schedule. Exiting.")
-            return
+        if future_games.empty: return
         current_week = int(future_games['Week'].min())
 
     print(f"  -> Generating predictions for Week {current_week}")
@@ -139,8 +136,8 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         matchup_prompt = f"""
         Act as an expert NFL analyst. Predict the outcome of the {away_team_full} at {home_team_full} game.
         **Analysis Guidelines:**
-        - **Prioritize current {YEAR} season data** as the primary indicator of team form.
-        - Use {YEAR-1} data as supplementary context, especially for players with limited stats this season.
+        - Prioritize current {YEAR} season data as the primary indicator of team form.
+        - Use {YEAR-1} data as supplementary context for players.
         - Acknowledge that early-season data is limited. Base your analysis on performance within the games played so far.
         Analyze the provided data tables below.
         ---
@@ -176,9 +173,64 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         time.sleep(15)
 
 def run_results_mode(spreadsheet, dataframes, now_utc):
-    # This function is a placeholder for the final, API-driven results logic
-    print("\n--- TUESDAY: Running in Results Mode (Placeholder) ---")
-    pass
+    schedule_df = dataframes['Schedule']
+    eastern_tz = pytz.timezone('US/Eastern')
+    past_games = schedule_df[schedule_df['datetime'] <= now_utc]
+    if past_games.empty: return
+    last_week_number = int(past_games['Week'].max())
+    print(f"  -> Updating results for Week {last_week_number}")
+    games_to_update = schedule_df[schedule_df['Week'] == last_week_number]
+    
+    pred_sheet_name = f"Week_{last_week_number}_Predictions"
+    try:
+        worksheet_pred = spreadsheet.worksheet(pred_sheet_name)
+    except gspread.WorksheetNotFound:
+        print(f"  -> Prediction sheet for Week {last_week_number} not found. Running predictions first.")
+        run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=last_week_number)
+        worksheet_pred = spreadsheet.worksheet(pred_sheet_name)
+
+    stats_sheet_name = f"Week_{last_week_number}_Actual_Stats"
+    try:
+        worksheet_stats = spreadsheet.worksheet(stats_sheet_name)
+        worksheet_stats.clear()
+    except gspread.WorksheetNotFound:
+        worksheet_stats = spreadsheet.add_worksheet(title=stats_sheet_name, rows=500, cols=20)
+    
+    stats_headers = ["Matchup", "Player", "PassYds", "RushYds", "RecYds", "PassTD", "RushTD", "RecTD"]
+    worksheet_stats.update('A1', [stats_headers])
+    worksheet_stats.freeze(rows=1)
+
+    for index, game in games_to_update.iterrows():
+        away_team_full, home_team_full = game['Away Team'], game['Home Team']
+        game_id = game['GameID']
+        print(f"\n--- Updating: {away_team_full} at {home_team_full} ---")
+        
+        game_details = get_api_data("games", {"id": game_id})
+        if not game_details: continue
+        game_data = game_details[0]
+        final_score = f"{game_data['scores']['away']['total']}-{game_data['scores']['home']['total']}"
+        actual_winner = home_team_full if game_data['scores']['home']['total'] > game_data['scores']['away']['total'] else away_team_full
+        
+        kickoff_display_str = pd.to_datetime(game['datetime']).tz_convert(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
+        row_num = find_or_create_row(worksheet_pred, away_team_full, home_team_full, kickoff_display_str)
+        worksheet_pred.update([[actual_winner, final_score]], f'F{row_num}:G{row_num}')
+        
+        player_stats_data = get_api_data("games/statistics/players", {"game": game_id})
+        if player_stats_data:
+            stats_list = []
+            for team_stats in player_stats_data:
+                for player_data in team_stats['players']:
+                    player_info = {'Matchup': f"{away_team_full} @ {home_team_full}", 'Player': player_data['player']['name']}
+                    for group in player_data['statistics']:
+                        for stat in group['statistics']:
+                            # Simplified parsing - this needs to be expanded
+                            if stat['name'] == 'passing yards': player_info['PassYds'] = stat['value']
+                    stats_list.append(player_info)
+            
+            if stats_list:
+                stats_df = pd.DataFrame(stats_list)
+                worksheet_stats.append_rows(stats_df.values.tolist())
+        time.sleep(2)
 
 def main():
     print("Authenticating with Google Sheets...")

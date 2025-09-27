@@ -10,6 +10,7 @@ import pytz
 import requests
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
+from io import StringIO
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -71,25 +72,24 @@ def hide_data_sheets(spreadsheet):
     sheets = spreadsheet.worksheets()
     for sheet in sheets:
         if not sheet.title.startswith("Week_"):
-            try:
-                sheet.hide()
+            try: sheet.hide()
             except Exception: pass
         else:
-            try:
-                sheet.show()
+            try: sheet.show()
             except Exception: pass
 
 def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     eastern_tz = pytz.timezone('US/Eastern')
     schedule_df = dataframes['Schedule']
     team_map_df = dataframes['team_match']
-    full_name_to_abbr = {row['Full Name']: row['Abbreviation'] for _, row in team_map_df.iterrows()}
-
+    
     if week_override:
         current_week = week_override
     else:
         future_games = schedule_df[schedule_df['datetime'] > now_utc]
-        if future_games.empty: return
+        if future_games.empty: 
+            print("  -> No future games found in the schedule. Exiting.")
+            return
         current_week = int(future_games['Week'].min())
 
     print(f"  -> Generating predictions for Week {current_week}")
@@ -110,11 +110,12 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     player_stats_2024 = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['2024_O_Player_Passing', '2024_O_Player_Rushing', '2024_O_Player_Receiving']], ignore_index=True)
     team_offense_2025 = dataframes.get('O_Team_Overall', pd.DataFrame())
     
+    master_team_map = {row[col]: row['Full Name'] for _, row in team_map_df.iterrows() for col in team_map_df.columns if row[col]}
     for df in [depth_chart_df, player_stats_2025, player_stats_2024, team_offense_2025]:
         if not df.empty:
             team_col = 'Team' if 'Team' in df.columns else 'Tm'
             if team_col in df.columns:
-                df['Team_Full'] = df[team_col].map({row[col]: row['Full Name'] for _, row in team_map_df.iterrows() for col in team_map_df.columns if row[col]})
+                df['Team_Full'] = df[team_col].map(master_team_map)
 
     for index, game in this_weeks_games.iterrows():
         away_team_full, home_team_full = game['Away Team'], game['Home Team']
@@ -136,7 +137,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         matchup_prompt = f"""
         Act as an expert NFL analyst. Predict the outcome of the {away_team_full} at {home_team_full} game.
         **Analysis Guidelines:**
-        - Prioritize current {YEAR} season data as the primary indicator of team form.
+        - **Prioritize current {YEAR} season data** as the primary indicator of team form.
         - Use {YEAR-1} data as supplementary context for players.
         - Acknowledge that early-season data is limited. Base your analysis on performance within the games played so far.
         Analyze the provided data tables below.
@@ -165,8 +166,8 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
             score_match = re.search(r"Predicted Final Score:\s*(.*)", details, re.IGNORECASE)
             winner = winner_match.group(1).strip() if winner_match else "See Details"
             score = score_match.group(1).strip() if score_match else "See Details"
-            worksheet.update([[winner, score]], f'D{row_num}:E{row_num}')
-            worksheet.update([[details]], f'H{row_num}')
+            worksheet.update(f'D{row_num}:E{row_num}', [[winner, score]])
+            worksheet.update(f'H{row_num}', [[details]])
             print(f"    -> SUCCESS: Wrote prediction to sheet.")
         except Exception as e:
             print(f"    -> ERROR: Could not generate prediction: {e}")
@@ -185,7 +186,7 @@ def run_results_mode(spreadsheet, dataframes, now_utc):
     try:
         worksheet_pred = spreadsheet.worksheet(pred_sheet_name)
     except gspread.WorksheetNotFound:
-        print(f"  -> Prediction sheet for Week {last_week_number} not found. Running predictions first.")
+        print(f"  -> Prediction sheet for Week {last_week_number} not found. Running predictions first to create it.")
         run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=last_week_number)
         worksheet_pred = spreadsheet.worksheet(pred_sheet_name)
 
@@ -211,21 +212,21 @@ def run_results_mode(spreadsheet, dataframes, now_utc):
         final_score = f"{game_data['scores']['away']['total']}-{game_data['scores']['home']['total']}"
         actual_winner = home_team_full if game_data['scores']['home']['total'] > game_data['scores']['away']['total'] else away_team_full
         
-        kickoff_display_str = pd.to_datetime(game['datetime']).tz_convert(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
+        kickoff_display_str = game['datetime'].astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
         row_num = find_or_create_row(worksheet_pred, away_team_full, home_team_full, kickoff_display_str)
-        worksheet_pred.update([[actual_winner, final_score]], f'F{row_num}:G{row_num}')
+        worksheet_pred.update(f'F{row_num}:G{row_num}', [[actual_winner, final_score]])
         
         player_stats_data = get_api_data("games/statistics/players", {"game": game_id})
         if player_stats_data:
             stats_list = []
             for team_stats in player_stats_data:
                 for player_data in team_stats['players']:
-                    player_info = {'Matchup': f"{away_team_full} @ {home_team_full}", 'Player': player_data['player']['name']}
+                    p_info = {'Matchup': f"{away_team_full} @ {home_team_full}", 'Player': player_data['player']['name']}
                     for group in player_data['statistics']:
                         for stat in group['statistics']:
-                            # Simplified parsing - this needs to be expanded
-                            if stat['name'] == 'passing yards': player_info['PassYds'] = stat['value']
-                    stats_list.append(player_info)
+                            if stat['name'] == 'passing yards': p_info['PassYds'] = stat['value']
+                            # Add more stats here...
+                    stats_list.append(p_info)
             
             if stats_list:
                 stats_df = pd.DataFrame(stats_list)
@@ -252,12 +253,6 @@ def main():
         
     team_map_df = dataframes['team_match']
     master_team_map = {row[col]: row['Full Name'] for _, row in team_map_df.iterrows() for col in team_map_df.columns if row[col]}
-
-    print("\nStandardizing team names...")
-    for name, df in dataframes.items():
-        team_cols = [col for col in ['Team', 'Tm'] if col in df.columns]
-        for col in team_cols:
-            df['Team_Full'] = df[col].map(master_team_map)
     
     eastern_tz = pytz.timezone('US/Eastern')
     now_utc = datetime.now(timezone.utc)

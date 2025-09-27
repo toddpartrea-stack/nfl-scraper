@@ -34,4 +34,5 @@ jobs:
           GSPREAD_CREDENTIALS: ${{ secrets.GSPREAD_CREDENTIALS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           AMERICAN_FOOTBALL_API_KEY: ${{ secrets.AMERICAN_FOOTBALL_API_KEY }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
         run: python3 run_predictions.py

@@ -21,18 +21,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Create credentials files from secrets
-        run: |
-          echo '${{ secrets.GDRIVE_CREDENTIALS }}' > credentials.json
-          echo '${{ secrets.GDRIVE_TOKEN_BASE64 }}' | base64 --decode > token.pickle
-
       - name: Run Scraper Script
         env:
+          # This block makes the secrets available to the Python script
+          GSPREAD_CREDENTIALS: ${{ secrets.GSPREAD_CREDENTIALS }}
           AMERICAN_FOOTBALL_API_KEY: ${{ secrets.AMERICAN_FOOTBALL_API_KEY }}
         run: python3 pfr_scraper.py
 
       - name: Run Prediction Script
         env:
+          # This block makes the secrets available to the Python script
+          GSPREAD_CREDENTIALS: ${{ secrets.GSPREAD_CREDENTIALS }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           AMERICAN_FOOTBALL_API_KEY: ${{ secrets.AMERICAN_FOOTBALL_API_KEY }}
         run: python3 run_predictions.py

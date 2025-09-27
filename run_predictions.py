@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timezone
 import vertexai
 from vertexai.generative_models import GenerativeModel
+from gspread_formatting import *
 
 load_dotenv()
 
@@ -97,11 +98,16 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     worksheet.update('A1', [headers])
     worksheet.freeze(rows=1)
 
+    # ### --- UPGRADE #1: AUTO-FORMAT THE PREDICTION COLUMN --- ###
+    # Set the text wrapping for the 'Prediction Analysis' column (column F)
+    fmt = CellFormat(wrap_strategy='WRAP')
+    format_cell_range(worksheet, 'F:F', fmt)
+
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
     
     print("--- Initializing Vertex AI ---")
     vertexai.init()
-    model = GenerativeModel("gemini-2.5-pro")
+    model = GenerativeModel("gemini-1.5-pro") # Using the model you confirmed works best
     
     depth_chart_df = dataframes.get('Depth_Charts', pd.DataFrame())
     player_stats_current = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving'] if name in dataframes], ignore_index=True)
@@ -129,7 +135,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         home_team_stats = team_offense_df[team_offense_df['Team_Full'] == home_team_full]
         away_team_stats = team_offense_df[team_offense_df['Team_Full'] == away_team_full]
         
-        # ### --- UPGRADED PROMPT WITH LIKELIHOOD --- ###
+        # ### --- UPGRADE #2: PROMPT WITH LIKELIHOODS AND SPACING --- ###
         matchup_prompt = f"""
         You are an expert sports analyst and gambler with a deep understanding of NFL data. Your task is to provide a detailed prediction analysis for an upcoming game.
 
@@ -144,7 +150,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         - **Team Standings ({YEAR}):** {away_team_stats.to_string()}
         - **Top Player Stats ({YEAR}):** {away_roster_stats.to_string()}
         ---
-        Based on your analysis, provide your complete response as a single block of markdown-formatted text. Your response must follow this structure exactly, including all asterisks and numbering:
+        Based on your analysis, provide your complete response as a single block of markdown-formatted text. Your response must follow this structure exactly, including all asterisks, numbering, and spacing:
 
         **1. Game Prediction:**
         ***Predicted Winner:** [Team Name]
@@ -154,17 +160,30 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         ***[Home Team QB Name]:**
         ** Passing Yards:** [Yards] (Likelihood: [Percent])
         ** Rushing Yards:** [Yards] (Likelihood: [Percent])
+        ** Passing TDs:** [TDs] (Likelihood: [Percent])
+        ** Interceptions:** [INTs] (Likelihood: [Percent])
+
         ***[Away Team QB Name]:**
         ** Passing Yards:** [Yards] (Likelihood: [Percent])
         ** Rushing Yards:** [Yards] (Likelihood: [Percent])
+        ** Passing TDs:** [TDs] (Likelihood: [Percent])
+        ** Interceptions:** [INTs] (Likelihood: [Percent])
+
         ***[Home Team Lead RB Name]:**
         ** Rushing Yards:** [Yards] (Likelihood: [Percent])
+        ** Rushing TDs:** [TDs] (Likelihood: [Percent])
+
         ***[Away Team Lead RB Name]:**
         ** Rushing Yards:** [Yards] (Likelihood: [Percent])
+        ** Rushing TDs:** [TDs] (Likelihood: [Percent])
+
         ***[Home Team Lead WR Name]:**
         ** Receiving Yards:** [Yards] (Likelihood: [Percent])
+        ** Receiving TDs:** [TDs] (Likelihood: [Percent])
+
         ***[Away Team Lead WR Name]:**
         ** Receiving Yards:** [Yards] (Likelihood: [Percent])
+        ** Receiving TDs:** [TDs] (Likelihood: [Percent])
 
         **3. Touchdown Scorers:**
         ** [Player Name 1] ([Position])

@@ -61,12 +61,17 @@ def hide_data_sheets(spreadsheet):
     print("\n--- Cleaning up spreadsheet visibility ---")
     sheets = spreadsheet.worksheets()
     for sheet in sheets:
-        if sheet.title.startswith("Week_"):
-            try: sheet.show()
-            except Exception: pass
+        # --- THIS IS THE ONLY LINE THAT CHANGED ---
+        if sheet.title.startswith("Week_") or sheet.title == "Todds Tab":
+            try:
+                sheet.show()
+            except Exception:
+                pass  # May fail if already visible
         else:
-            try: sheet.hide()
-            except Exception: pass
+            try:
+                sheet.hide()
+            except Exception:
+                pass  # May fail if already hidden
 
 def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     eastern_tz = pytz.timezone('US/Eastern')
@@ -98,8 +103,6 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     worksheet.update('A1', [headers])
     worksheet.freeze(rows=1)
 
-    # ### --- UPGRADE #1: AUTO-FORMAT THE PREDICTION COLUMN --- ###
-    # Set the text wrapping for the 'Prediction Analysis' column (column F)
     fmt = CellFormat(wrap_strategy='WRAP')
     format_cell_range(worksheet, 'F:F', fmt)
 
@@ -107,7 +110,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     
     print("--- Initializing Vertex AI ---")
     vertexai.init()
-    model = GenerativeModel("gemini-1.5-pro") # Using the model you confirmed works best
+    model = GenerativeModel("gemini-1.5-pro")
     
     depth_chart_df = dataframes.get('Depth_Charts', pd.DataFrame())
     player_stats_current = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving'] if name in dataframes], ignore_index=True)
@@ -135,7 +138,6 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         home_team_stats = team_offense_df[team_offense_df['Team_Full'] == home_team_full]
         away_team_stats = team_offense_df[team_offense_df['Team_Full'] == away_team_full]
         
-        # ### --- UPGRADE #2: PROMPT WITH LIKELIHOODS AND SPACING --- ###
         matchup_prompt = f"""
         You are an expert sports analyst and gambler with a deep understanding of NFL data. Your task is to provide a detailed prediction analysis for an upcoming game.
 

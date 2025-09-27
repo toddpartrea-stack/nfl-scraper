@@ -108,7 +108,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
 
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-pro')
     
     depth_chart_df = dataframes.get('Depth_Charts', pd.DataFrame())
     player_stats_current = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']], ignore_index=True)

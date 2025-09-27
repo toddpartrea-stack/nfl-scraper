@@ -10,3 +10,4 @@ html5lib
 google-cloud-aiplatform
 pytz
 python-dotenv
+gspread-formatting

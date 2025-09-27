@@ -59,22 +59,21 @@ def get_api_data(endpoint, params):
         return []
 
 def calculate_nfl_week(df):
-    """Calculates the NFL week number based on game dates, ignoring preseason."""
+    """Calculates the NFL week number based on game dates, using a Thursday-Wednesday week."""
     print("  -> Calculating week numbers from game dates...")
     df['game_date'] = pd.to_datetime(df['Date'], errors='coerce')
     df.dropna(subset=['game_date'], inplace=True)
     
-    # FIXED: Find the first game of the REGULAR season (on or after Sep 1st)
     regular_season_games = df[df['game_date'].dt.month >= 9]
     if regular_season_games.empty:
         print("  -> Warning: No games found in or after September. Week calculation may be incorrect.")
-        # Fallback to absolute minimum date if no September games are found
         season_start_date = df['game_date'].min()
     else:
         season_start_date = regular_season_games['game_date'].min()
 
-    # An NFL week typically starts on a Tuesday. Find the Tuesday of the first week.
-    start_of_week1 = season_start_date - pd.to_timedelta(season_start_date.weekday() - 1, unit='d')
+    # An NFL week typically starts on Thursday. Find the Thursday of the first week.
+    # weekday() -> Monday is 0 and Sunday is 6. Thursday is 3.
+    start_of_week1 = season_start_date - pd.to_timedelta(season_start_date.weekday() - 3, unit='d')
     
     def get_week(date):
         if date < start_of_week1:
@@ -100,7 +99,6 @@ if __name__ == "__main__":
         print(f"❌ CRITICAL ERROR: Could not connect to Google Sheets. Check Service Account setup. Error: {e}")
         exit()
 
-    # 1. Get Official Schedule from API for the CURRENT season
     print(f"\n--- Fetching Official Schedule from API ({CURRENT_YEAR}) ---")
     try:
         games_data = get_api_data("games", {"league": "1", "season": str(CURRENT_YEAR)})
@@ -109,25 +107,19 @@ if __name__ == "__main__":
             for item in games_data:
                 schedule_list.append({
                     'GameID': item.get('game', {}).get('id'),
-                    'Week': 'N/A', # Placeholder, will be calculated
+                    'Week': 'N/A',
                     'Date': item.get('game', {}).get('date', {}).get('date'),
                     'Time': item.get('game', {}).get('date', {}).get('time'),
                     'Away Team': item.get('teams', {}).get('away', {}).get('name'),
                     'Home Team': item.get('teams', {}).get('home', {}).get('name')
                 })
             schedule_df = pd.DataFrame(schedule_list)
-            
-            # Use our new robust function to calculate the week number
             schedule_df = calculate_nfl_week(schedule_df)
-            
-            # Filter out preseason games (Week 0) before writing to sheet
-            schedule_df = schedule_df[schedule_df['Week'] > 0]
-
+            schedule_df = schedule_df[schedule_df['Week'] > 0].copy()
             write_to_sheet(spreadsheet, "Schedule", schedule_df)
     except Exception as e:
         print(f"❌ Could not process Schedule from API: {e}")
 
-    # 2. Get Team Standings from the CURRENT season
     print(f"\n--- Fetching Team Standings from API ({CURRENT_YEAR}) ---")
     try:
         standings_data = get_api_data("standings", {"league": "1", "season": str(CURRENT_YEAR)})
@@ -145,9 +137,9 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Could not process Team Standings: {e}")
 
-    # 3. Get Player Stats for CURRENT and PREVIOUS seasons
     for year_to_fetch in [CURRENT_YEAR, PREVIOUS_YEAR]:
         print(f"\n--- Fetching Player Stats from API ({year_to_fetch}) ---")
+        # ... The rest of this script is unchanged
         all_players_stats = []
         try:
             teams_data = get_api_data("teams", {"league": "1", "season": year_to_fetch})
@@ -183,7 +175,6 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"❌ Could not process Player Stats for {year_to_fetch}: {e}")
     
-    # 4. Scrape Depth Charts
     print("\n--- Scraping FootballGuys.com Depth Charts ---")
     try:
         url = "https://www.footballguys.com/depth-charts"

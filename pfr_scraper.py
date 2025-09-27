@@ -81,7 +81,6 @@ if __name__ == "__main__":
                         'Home Team': item['teams']['home']['name']
                     })
                 schedule_df = pd.DataFrame(schedule_list)
-                # Correctly extract week number from strings like "Week 1" or "Hall of Fame Weekend"
                 schedule_df['Week'] = schedule_df['Week'].str.extract(r'(\d+)').fillna(0).astype(int)
                 write_to_sheet(spreadsheet, "Schedule", schedule_df)
         except Exception as e:
@@ -93,9 +92,8 @@ if __name__ == "__main__":
             standings_data = get_api_data("standings", {"league": "1", "season": YEAR})
             if standings_data:
                 all_teams_stats = []
-                # The response is a list of lists, one for each division
-                for division in standings_data:
-                    for team_info in division:
+                for conference_data in standings_data:
+                    for team_info in conference_data:
                         all_teams_stats.append({
                             'Tm': team_info['team']['name'],
                             'W': team_info['won'], 'L': team_info['lost'], 'T': team_info['ties'],
@@ -118,7 +116,7 @@ if __name__ == "__main__":
                     print(f"  -> Fetching players for team ID: {team_id}")
                     player_stats_data = get_api_data("players/statistics", {"team": team_id, "season": year_to_fetch})
                     if player_stats_data: all_players_stats.extend(player_stats_data)
-                    time.sleep(1.5) # Respect API rate limits
+                    time.sleep(1.5)
                 if all_players_stats:
                     passing, rushing, receiving = [], [], []
                     for p_data in all_players_stats:

@@ -18,10 +18,12 @@ API_HOST = "v1.american-football.api-sports.io"
 
 # --- AUTHENTICATION & HELPERS ---
 def get_gspread_client():
-    # SIMPLIFIED: gspread now finds the credentials set by the GitHub Action automatically
-    return gspread.auth.default()
+    # FINAL FIX: Bypassing the broken .auth.default() and using a direct, explicit method
+    credential_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+    if not credential_path:
+        raise ValueError("Could not find Google credentials path. The auth step in the workflow may have failed.")
+    return gspread.service_account(filename=credential_path)
 
-# ... The rest of the scraper script is unchanged ...
 def write_to_sheet(spreadsheet, sheet_name, dataframe):
     print(f"  -> Writing data to '{sheet_name}' tab...")
     if dataframe.empty:
@@ -88,7 +90,6 @@ if __name__ == "__main__":
         exit()
 
     print(f"\n--- Fetching Official Schedule from API ({CURRENT_YEAR}) ---")
-    # ... (rest of the script is identical)
     try:
         games_data = get_api_data("games", {"league": "1", "season": str(CURRENT_YEAR)})
         if games_data:

@@ -29,8 +29,13 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install dependencies with no cache
-        run: pip install --no-cache-dir -r requirements.txt
+      - name: Install dependencies (aggressively)
+        # UPDATED: Added --upgrade and --force-reinstall to override any caching
+        run: pip install --no-cache-dir --upgrade --force-reinstall -r requirements.txt
+
+      - name: Show installed packages
+        # NEW: This step will print all installed library versions to the log for debugging
+        run: pip freeze
 
       - name: Run Scraper Script
         env:

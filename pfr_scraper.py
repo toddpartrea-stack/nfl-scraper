@@ -58,6 +58,34 @@ def get_api_data(endpoint, params):
         print(f"  -> API request failed for endpoint '{endpoint}': {e}")
         return []
 
+def calculate_nfl_week(df):
+    """Calculates the NFL week number based on game dates, ignoring preseason."""
+    print("  -> Calculating week numbers from game dates...")
+    df['game_date'] = pd.to_datetime(df['Date'], errors='coerce')
+    df.dropna(subset=['game_date'], inplace=True)
+    
+    # FIXED: Find the first game of the REGULAR season (on or after Sep 1st)
+    regular_season_games = df[df['game_date'].dt.month >= 9]
+    if regular_season_games.empty:
+        print("  -> Warning: No games found in or after September. Week calculation may be incorrect.")
+        # Fallback to absolute minimum date if no September games are found
+        season_start_date = df['game_date'].min()
+    else:
+        season_start_date = regular_season_games['game_date'].min()
+
+    # An NFL week typically starts on a Tuesday. Find the Tuesday of the first week.
+    start_of_week1 = season_start_date - pd.to_timedelta(season_start_date.weekday() - 1, unit='d')
+    
+    def get_week(date):
+        if date < start_of_week1:
+            return 0  # Assign 0 for preseason
+        return ((date - start_of_week1).days // 7) + 1
+
+    df['Week'] = df['game_date'].apply(get_week)
+    df.drop(columns=['game_date'], inplace=True)
+    return df
+
+
 # --- MAIN SCRIPT ---
 if __name__ == "__main__":
     if not API_KEY:
@@ -81,14 +109,20 @@ if __name__ == "__main__":
             for item in games_data:
                 schedule_list.append({
                     'GameID': item.get('game', {}).get('id'),
-                    'Week': item.get('league', {}).get('round', 'N/A'),
+                    'Week': 'N/A', # Placeholder, will be calculated
                     'Date': item.get('game', {}).get('date', {}).get('date'),
                     'Time': item.get('game', {}).get('date', {}).get('time'),
                     'Away Team': item.get('teams', {}).get('away', {}).get('name'),
                     'Home Team': item.get('teams', {}).get('home', {}).get('name')
                 })
             schedule_df = pd.DataFrame(schedule_list)
-            schedule_df['Week'] = schedule_df['Week'].str.extract(r'(\d+)', expand=False).fillna(0).astype(int)
+            
+            # Use our new robust function to calculate the week number
+            schedule_df = calculate_nfl_week(schedule_df)
+            
+            # Filter out preseason games (Week 0) before writing to sheet
+            schedule_df = schedule_df[schedule_df['Week'] > 0]
+
             write_to_sheet(spreadsheet, "Schedule", schedule_df)
     except Exception as e:
         print(f"❌ Could not process Schedule from API: {e}")
@@ -129,26 +163,18 @@ if __name__ == "__main__":
                 passing, rushing, receiving = [], [], []
                 for p_data in all_players_stats:
                     player_info = p_data.get('player', {})
-                    if not p_data.get('teams'):
-                        continue
+                    if not p_data.get('teams'): continue
                     
                     team_level_data = p_data['teams'][0]
                     team_info = team_level_data.get('team', {})
                     
-                    base_stats = {
-                        'Player': player_info.get('name'),
-                        'Tm': team_info.get('name'),
-                        'G': 0 # Games played is not in this endpoint, defaulting to 0
-                    }
+                    base_stats = { 'Player': player_info.get('name'), 'Tm': team_info.get('name'), 'G': 0 }
                     
                     for group in team_level_data.get('groups', []):
                         stats = {s['name']: s['value'] for s in group.get('statistics', [])}
-                        if group.get('name') == 'Passing':
-                            passing.append({**base_stats, **stats})
-                        elif group.get('name') == 'Rushing':
-                            rushing.append({**base_stats, **stats})
-                        elif group.get('name') == 'Receiving':
-                            receiving.append({**base_stats, **stats})
+                        if group.get('name') == 'Passing': passing.append({**base_stats, **stats})
+                        elif group.get('name') == 'Rushing': rushing.append({**base_stats, **stats})
+                        elif group.get('name') == 'Receiving': receiving.append({**base_stats, **stats})
                 
                 prefix = "" if year_to_fetch == CURRENT_YEAR else f"{year_to_fetch}_"
                 write_to_sheet(spreadsheet, f"{prefix}O_Player_Passing", pd.DataFrame(passing))

@@ -10,7 +10,8 @@ from dotenv import load_dotenv
 from datetime import datetime, timezone
 import vertexai
 from vertexai.generative_models import GenerativeModel
-from gspread_formatting import *
+# UPDATED: Importing the specific formatting function we need
+from gspread_formatting import set_wrap_strategy
 
 load_dotenv()
 
@@ -61,17 +62,16 @@ def hide_data_sheets(spreadsheet):
     print("\n--- Cleaning up spreadsheet visibility ---")
     sheets = spreadsheet.worksheets()
     for sheet in sheets:
-        # --- THIS IS THE ONLY LINE THAT CHANGED ---
         if sheet.title.startswith("Week_") or sheet.title == "Todds Tab":
             try:
                 sheet.show()
             except Exception:
-                pass  # May fail if already visible
+                pass
         else:
             try:
                 sheet.hide()
             except Exception:
-                pass  # May fail if already hidden
+                pass
 
 def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     eastern_tz = pytz.timezone('US/Eastern')
@@ -103,8 +103,8 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     worksheet.update('A1', [headers])
     worksheet.freeze(rows=1)
 
-    fmt = CellFormat(wrap_strategy='WRAP')
-    format_cell_range(worksheet, 'F:F', fmt)
+    # ### --- FINAL FIX: Using the correct function for text wrapping --- ###
+    set_wrap_strategy(worksheet, 'F:F', 'WRAP')
 
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
     
@@ -140,9 +140,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         
         matchup_prompt = f"""
         You are an expert sports analyst and gambler with a deep understanding of NFL data. Your task is to provide a detailed prediction analysis for an upcoming game.
-
         Analyze the matchup between the {away_team_full} (Away) and {home_team_full} (Home) using the provided data.
-
         ## Data for Analysis:
         ### {home_team_full} (Home)
         - **Team Standings ({YEAR}):** {home_team_stats.to_string()}

@@ -32,4 +32,5 @@ jobs:
       - name: Run Prediction Script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AMERICAN_FOOTBALL_API_KEY: ${{ secrets.AMERICAN_FOOTBALL_API_KEY }}
         run: python run_predictions.py

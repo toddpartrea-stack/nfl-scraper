@@ -21,7 +21,6 @@ API_HOST = "v1.american-football.api-sports.io"
 
 # --- AUTHENTICATION & HELPERS ---
 def get_gspread_client():
-    """Authenticates with Google Sheets using Service Account credentials from an environment variable/secret."""
     creds_json_str = os.getenv('GSPREAD_CREDENTIALS')
     if not creds_json_str:
         raise ValueError("GSPREAD_CREDENTIALS secret not found. Please follow setup instructions.")
@@ -31,7 +30,6 @@ def get_gspread_client():
     return client
 
 def write_to_sheet(spreadsheet, sheet_name, dataframe):
-    """Writes a pandas DataFrame to a specified Google Sheet tab."""
     print(f"  -> Writing data to '{sheet_name}' tab...")
     if dataframe.empty:
         print("  -> DataFrame is empty, skipping write.")
@@ -50,7 +48,6 @@ def write_to_sheet(spreadsheet, sheet_name, dataframe):
     print(f"  -> Successfully wrote {len(dataframe)} rows.")
 
 def get_api_data(endpoint, params):
-    """Fetches data from the API-Football endpoint."""
     url = f"https://{API_HOST}/{endpoint}"
     headers = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": API_HOST}
     try:
@@ -91,7 +88,6 @@ if __name__ == "__main__":
                     'Home Team': item.get('teams', {}).get('home', {}).get('name')
                 })
             schedule_df = pd.DataFrame(schedule_list)
-            # FIXED: Robustly extracts week number from strings like "Regular Season - Week 1" or "Week 4"
             schedule_df['Week'] = schedule_df['Week'].str.extract(r'(\d+)', expand=False).fillna(0).astype(int)
             write_to_sheet(spreadsheet, "Schedule", schedule_df)
     except Exception as e:
@@ -103,7 +99,6 @@ if __name__ == "__main__":
         standings_data = get_api_data("standings", {"league": "1", "season": str(CURRENT_YEAR)})
         if standings_data:
             all_teams_stats = []
-            # FIXED: Correctly parses the list of dictionaries returned by the API
             for team_info in standings_data:
                 all_teams_stats.append({
                     'Tm': team_info.get('team', {}).get('name'),
@@ -116,13 +111,13 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Could not process Team Standings: {e}")
 
-    # 3. Get Player Stats for CURRENT and PREVIOUS seasons for context
+    # 3. Get Player Stats for CURRENT and PREVIOUS seasons
     for year_to_fetch in [CURRENT_YEAR, PREVIOUS_YEAR]:
         print(f"\n--- Fetching Player Stats from API ({year_to_fetch}) ---")
         all_players_stats = []
         try:
             teams_data = get_api_data("teams", {"league": "1", "season": year_to_fetch})
-            team_ids = [team['id'] for team in teams_data if team] # Add check for valid team object
+            team_ids = [team['id'] for team in teams_data if team]
             for team_id in team_ids:
                 print(f"  -> Fetching players for team ID: {team_id}")
                 player_stats_data = get_api_data("players/statistics", {"team": team_id, "season": year_to_fetch})
@@ -133,12 +128,27 @@ if __name__ == "__main__":
             if all_players_stats:
                 passing, rushing, receiving = [], [], []
                 for p_data in all_players_stats:
-                    p_info = {'Player': p_data.get('player', {}).get('name'), 'Tm': p_data.get('team', {}).get('name'), 'G': p_data.get('games', {}).get('appearences')}
-                    for group in p_data.get('statistics', []):
+                    player_info = p_data.get('player', {})
+                    if not p_data.get('teams'):
+                        continue
+                    
+                    team_level_data = p_data['teams'][0]
+                    team_info = team_level_data.get('team', {})
+                    
+                    base_stats = {
+                        'Player': player_info.get('name'),
+                        'Tm': team_info.get('name'),
+                        'G': 0 # Games played is not in this endpoint, defaulting to 0
+                    }
+                    
+                    for group in team_level_data.get('groups', []):
                         stats = {s['name']: s['value'] for s in group.get('statistics', [])}
-                        if group.get('name') == 'Passing': passing.append({**p_info, **stats})
-                        elif group.get('name') == 'Rushing': rushing.append({**p_info, **stats})
-                        elif group.get('name') == 'Receiving': receiving.append({**p_info, **stats})
+                        if group.get('name') == 'Passing':
+                            passing.append({**base_stats, **stats})
+                        elif group.get('name') == 'Rushing':
+                            rushing.append({**base_stats, **stats})
+                        elif group.get('name') == 'Receiving':
+                            receiving.append({**base_stats, **stats})
                 
                 prefix = "" if year_to_fetch == CURRENT_YEAR else f"{year_to_fetch}_"
                 write_to_sheet(spreadsheet, f"{prefix}O_Player_Passing", pd.DataFrame(passing))
@@ -147,7 +157,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"❌ Could not process Player Stats for {year_to_fetch}: {e}")
     
-    # 4. Scrape Depth Charts (This is independent of season)
+    # 4. Scrape Depth Charts
     print("\n--- Scraping FootballGuys.com Depth Charts ---")
     try:
         url = "https://www.footballguys.com/depth-charts"

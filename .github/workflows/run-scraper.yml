@@ -9,9 +9,22 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+    
+    # Add permissions for the new authentication action
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v3
+
+      # NEW: Official Google Cloud authentication step
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GSPREAD_CREDENTIALS }}'
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -23,16 +36,12 @@ jobs:
 
       - name: Run Scraper Script
         env:
-          # This block makes the secrets available to the Python script
-          GSPREAD_CREDENTIALS: ${{ secrets.GSPREAD_CREDENTIALS }}
+          # The auth action handles credentials now, we only need the API key
           AMERICAN_FOOTBALL_API_KEY: ${{ secrets.AMERICAN_FOOTBALL_API_KEY }}
         run: python3 pfr_scraper.py
 
       - name: Run Prediction Script
         env:
-          # This block makes the secrets available to the Python script
-          GSPREAD_CREDENTIALS: ${{ secrets.GSPREAD_CREDENTIALS }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           AMERICAN_FOOTBALL_API_KEY: ${{ secrets.AMERICAN_FOOTBALL_API_KEY }}
-          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          # The auth action handles all Google credentials
         run: python3 run_predictions.py

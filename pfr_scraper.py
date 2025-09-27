@@ -9,6 +9,7 @@ import time
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from dotenv import load_dotenv
+from io import StringIO
 
 load_dotenv()
 
@@ -16,7 +17,10 @@ load_dotenv()
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
 YEAR = 2025
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-API_KEY = os.getenv('AMERICAN_FOOTBALL_API_KEY')
+
+# --- FIX: Read the key and immediately trim any whitespace/newlines ---
+raw_api_key = os.getenv('AMERICAN_FOOTBALL_API_KEY')
+API_KEY = raw_api_key.strip() if raw_api_key else None
 API_HOST = "v1.american-football.api-sports.io"
 
 # --- AUTHENTICATION & HELPERS ---
@@ -62,7 +66,7 @@ def get_api_data(endpoint, params):
 # --- MAIN SCRIPT ---
 if __name__ == "__main__":
     if not API_KEY:
-        print("❌ ERROR: AMERICAN_FOOTBALL_API_KEY secret not found.")
+        print("❌ ERROR: AMERICAN_FOOTBALL_API_KEY secret not found or is empty.")
     else:
         print("Authenticating with Google Sheets...")
         gc = get_gspread_client()
@@ -92,20 +96,17 @@ if __name__ == "__main__":
             print(f"\n--- Fetching Player Stats from API ({year_to_fetch}) ---")
             all_players_stats = []
             try:
-                # First, get all teams for the league
                 teams_data = get_api_data("teams", {"league": "1", "season": year_to_fetch})
                 team_ids = [team['id'] for team in teams_data]
                 
-                # Then, get player stats for each team
                 for team_id in team_ids:
                     print(f"  -> Fetching players for team ID: {team_id}")
                     player_stats_data = get_api_data("players/statistics", {"team": team_id, "season": year_to_fetch})
                     if player_stats_data:
                         all_players_stats.extend(player_stats_data)
-                    time.sleep(2) # To be respectful of API rate limits
+                    time.sleep(1.5) # Sleep to respect API rate limits (60/minute = 1 per second)
 
                 if all_players_stats:
-                    # Create separate dataframes for each category
                     passing_list, rushing_list, receiving_list = [], [], []
                     for player in all_players_stats:
                         p_info = {'Player': player['player']['name'], 'Tm': player['team']['name'], 'Age': player['player']['age'], 'G': player['games']['appearences']}

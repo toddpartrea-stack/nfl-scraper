@@ -149,14 +149,18 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         - Active Roster Stats ({YEAR}): {away_roster_stats.to_string()}
         - Roster Historical Stats ({YEAR-1}): {away_hist_stats.to_string()}
         ---
-        Based on your analysis, provide your complete response ONLY as a single, valid JSON object. Do not include any text before or after the JSON.
-        The JSON object must have the following keys: "predicted_winner", "predicted_score", "confidence_percent", "justification", "touchdown_scorers".
-        - "predicted_winner": string (The full team name of the winner)
-        - "predicted_score": string (The final score, e.g., "27-24")
-        - "confidence_percent": integer (A number from 1 to 100)
-        - "justification": string (A brief 2-3 sentence analysis)
-        - "touchdown_scorers": array of strings (A list of 2-3 players most likely to score a TD)
+        Based on the data, provide the following:
+        1. **Game Prediction:** Predicted Winner and Predicted Final Score.
+        2. **Score Confidence Percentage:** [Provide a confidence percentage from 1% to 100% for the predicted winner.]
+        3. **Justification:** A brief justification for your prediction.
+        4. **Key Player Stat Predictions:** For the starting QB, RB, and top WR for each team, provide predictions for their key stats. Format each player on a new line, with each stat on its own line underneath. Include a confidence percentage for each stat prediction. For example:
+           CHI RB Khalil Herbert
+           Rushing Yards: 75 - 80% confidence
+           Receiving Yards: 15 - 60% confidence
+           Touchdowns: 1 - 70% confidence
+        5. **Touchdown Scorers:** List 2-3 players most likely to score a **rushing or receiving** touchdown. Do not include quarterbacks for passing touchdowns. Provide a confidence percentage from 1% to 100% for each player.
         """
+        
         try:
             response = model.generate_content(matchup_prompt)
             cleaned_response = clean_json_response(response.text)

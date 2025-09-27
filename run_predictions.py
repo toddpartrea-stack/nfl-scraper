@@ -10,8 +10,8 @@ from dotenv import load_dotenv
 from datetime import datetime, timezone
 import vertexai
 from vertexai.generative_models import GenerativeModel
-# UPDATED: Importing the specific formatting function we need
-from gspread_formatting import set_wrap_strategy
+# UPDATED: Importing the correct formatting functions
+from gspread_formatting import CellFormat, format_cell_range
 
 load_dotenv()
 
@@ -103,8 +103,9 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     worksheet.update('A1', [headers])
     worksheet.freeze(rows=1)
 
-    # ### --- FINAL FIX: Using the correct function for text wrapping --- ###
-    set_wrap_strategy(worksheet, 'F:F', 'WRAP')
+    # ### --- FINAL FIX: Using the correct method for text wrapping --- ###
+    fmt = CellFormat(wrapStrategy='WRAP')
+    format_cell_range(worksheet, 'F:F', fmt)
 
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
     

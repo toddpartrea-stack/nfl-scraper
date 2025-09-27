@@ -108,7 +108,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     
     print("--- Initializing Vertex AI ---")
     vertexai.init()
-    model = GenerativeModel("gemini-1.0-pro")
+    model = GenerativeModel("gemini-2.5-pro")
     
     depth_chart_df = dataframes.get('Depth_Charts', pd.DataFrame())
     player_stats_current = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving'] if name in dataframes], ignore_index=True)

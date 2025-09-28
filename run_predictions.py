@@ -152,8 +152,8 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         Based on your analysis, provide your complete response as a single block of markdown-formatted text. Your response must follow this structure exactly, including all asterisks, numbering, and spacing:
 
         **1. Game Prediction:**
-        ***Predicted Winner:** [Team Name]
-        ***Predicted Final Score:** [Team A Score] - [Team B Score]
+        ***Predicted Winner:** [Team Name] (Likelihood: [Percent])
+        ***Predicted Final Score:** [Team A Score] - [Team B Score] (Likelihood: [Percent])
 
         **2. Key Player Stat Predictions:**
         ***[Home Team QB Name]:**

@@ -161,12 +161,11 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         home_wr_name = home_top_players[home_top_players['Position'] == 'WR']['Player'].iloc[0] if not home_top_players[home_top_players['Position'] == 'WR'].empty else "[Not Available]"
         away_wr_name = away_top_players[away_top_players['Position'] == 'WR']['Player'].iloc[0] if not away_top_players[away_top_players['Position'] == 'WR'].empty else "[Not Available]"
 
-        # ### --- FINAL PROMPT UPGRADE --- ###
-        # This version includes a strict JSON template to ensure all fields are always returned.
+        # ### --- FINAL PROMPT UPGRADE WITH NUMERICAL CONFIDENCE --- ###
         matchup_prompt = f"""
         You are an expert sports analyst and data scientist. Your task is to provide a detailed prediction analysis for an upcoming NFL game.
         Analyze the matchup between the {away_team_full} (Away) and {home_team_full} (Home) using the provided data and player names.
-        
+
         The top healthy players at key positions are:
         - Home QB: {home_qb_name}
         - Away QB: {away_qb_name}
@@ -185,20 +184,24 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         - **Top Healthy Player Stats ({YEAR}):** {away_roster_stats.to_string()}
         ---
         Based on your analysis, provide your complete response ONLY as a single, valid JSON object with no markdown.
-        Your response must follow this exact schema. Fill in a value for every field.
+        Your response must follow this exact schema. For every 'confidence' field, you MUST provide an integer between 1 and 100.
 
         {{
-          "winner": "string",
-          "score": "string",
+          "game_prediction": {{
+            "winner": "string",
+            "winner_confidence": 85,
+            "score": "string",
+            "score_confidence": 70
+          }},
           "justification": "string",
           "touchdown_scorers": ["string", "string"],
           "player_stats": {{
-            "{home_qb_name}": {{ "Passing Yards": "number", "Passing Yards Likelihood": "string", "Rushing Yards": "number", "Rushing Yards Likelihood": "string", "Passing TDs": "number", "Passing TDs Likelihood": "string", "Interceptions": "number", "Interceptions Likelihood": "string" }},
-            "{away_qb_name}": {{ "Passing Yards": "number", "Passing Yards Likelihood": "string", "Rushing Yards": "number", "Rushing Yards Likelihood": "string", "Passing TDs": "number", "Passing TDs Likelihood": "string", "Interceptions": "number", "Interceptions Likelihood": "string" }},
-            "{home_rb_name}": {{ "Rushing Yards": "number", "Rushing Yards Likelihood": "string", "Rushing TDs": "number", "Rushing TDs Likelihood": "string" }},
-            "{away_rb_name}": {{ "Rushing Yards": "number", "Rushing Yards Likelihood": "string", "Rushing TDs": "number", "Rushing TDs Likelihood": "string" }},
-            "{home_wr_name}": {{ "Receiving Yards": "number", "Receiving Yards Likelihood": "string", "Receiving TDs": "number", "Receiving TDs Likelihood": "string" }},
-            "{away_wr_name}": {{ "Receiving Yards": "number", "Receiving Yards Likelihood": "string", "Receiving TDs": "number", "Receiving TDs Likelihood": "string" }}
+            "{home_qb_name}": {{ "Passing Yards": 250, "Passing Yards_confidence": 65, "Rushing Yards": 10, "Rushing Yards_confidence": 50, "Passing TDs": 2, "Passing TDs_confidence": 70, "Interceptions": 1, "Interceptions_confidence": 60 }},
+            "{away_qb_name}": {{ "Passing Yards": 220, "Passing Yards_confidence": 65, "Rushing Yards": 15, "Rushing Yards_confidence": 50, "Passing TDs": 1, "Passing TDs_confidence": 70, "Interceptions": 1, "Interceptions_confidence": 60 }},
+            "{home_rb_name}": {{ "Rushing Yards": 80, "Rushing Yards_confidence": 70, "Rushing TDs": 1, "Rushing TDs_confidence": 75 }},
+            "{away_rb_name}": {{ "Rushing Yards": 60, "Rushing Yards_confidence": 70, "Rushing TDs": 0, "Rushing TDs_confidence": 75 }},
+            "{home_wr_name}": {{ "Receiving Yards": 90, "Receiving Yards_confidence": 65, "Receiving TDs": 1, "Receiving TDs_confidence": 70 }},
+            "{away_wr_name}": {{ "Receiving Yards": 75, "Receiving Yards_confidence": 65, "Receiving TDs": 0, "Receiving TDs_confidence": 70 }}
           }}
         }}
         """
@@ -206,28 +209,33 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
             response = model.generate_content(matchup_prompt, safety_settings=safety_settings)
             pred_json = json.loads(clean_json_response(response.text))
 
-            winner = pred_json.get("winner", "N/A")
-            score = pred_json.get("score", "N/A")
+            # ### --- UPGRADED FORMATTER FOR NUMERICAL CONFIDENCE --- ###
+            game_pred = pred_json.get("game_prediction", {})
+            winner = game_pred.get("winner", "N/A")
+            winner_conf = game_pred.get("winner_confidence", 0)
+            score = game_pred.get("score", "N/A")
+            score_conf = game_pred.get("score_confidence", 0)
+
             justification = pred_json.get("justification", "No justification provided.")
             td_scorers = pred_json.get("touchdown_scorers", [])
             player_stats = pred_json.get("player_stats", {})
 
             analysis_text = f"**1. Game Prediction:**\n"
-            analysis_text += f"***Predicted Winner:** {winner}\n"
-            analysis_text += f"***Predicted Final Score:** {score}\n\n"
+            analysis_text += f"***Predicted Winner:** {winner} (Confidence: {winner_conf}%)\n"
+            analysis_text += f"***Predicted Final Score:** {score} (Confidence: {score_conf}%)\n\n"
             
             analysis_text += f"**2. Key Player Stat Predictions:**\n"
             
             def format_player(name, stats):
                 if not stats or name == "[Not Available]": return f"***{name}***\n\n"
                 p_text = f"***{name}:**\n"
-                if 'Passing Yards' in stats: p_text += f"** Passing Yards:** {stats.get('Passing Yards', 'N/A')} (Likelihood: {stats.get('Passing Yards Likelihood', 'N/A')})\n"
-                if 'Rushing Yards' in stats: p_text += f"** Rushing Yards:** {stats.get('Rushing Yards', 'N/A')} (Likelihood: {stats.get('Rushing Yards Likelihood', 'N/A')})\n"
-                if 'Receiving Yards' in stats: p_text += f"** Receiving Yards:** {stats.get('Receiving Yards', 'N/A')} (Likelihood: {stats.get('Receiving Yards Likelihood', 'N/A')})\n"
-                if 'Passing TDs' in stats: p_text += f"** Passing TDs:** {stats.get('Passing TDs', 'N/A')} (Likelihood: {stats.get('Passing TDs Likelihood', 'N/A')})\n"
-                if 'Rushing TDs' in stats: p_text += f"** Rushing TDs:** {stats.get('Rushing TDs', 'N/A')} (Likelihood: {stats.get('Rushing TDs Likelihood', 'N/A')})\n"
-                if 'Receiving TDs' in stats: p_text += f"** Receiving TDs:** {stats.get('Receiving TDs', 'N/A')} (Likelihood: {stats.get('Receiving TDs Likelihood', 'N/A')})\n"
-                if 'Interceptions' in stats: p_text += f"** Interceptions:** {stats.get('Interceptions', 'N/A')} (Likelihood: {stats.get('Interceptions Likelihood', 'N/A')})\n"
+                if 'Passing Yards' in stats: p_text += f"** Passing Yards:** {stats.get('Passing Yards', 'N/A')} (Confidence: {stats.get('Passing Yards_confidence', 0)}%)\n"
+                if 'Rushing Yards' in stats: p_text += f"** Rushing Yards:** {stats.get('Rushing Yards', 'N/A')} (Confidence: {stats.get('Rushing Yards_confidence', 0)}%)\n"
+                if 'Receiving Yards' in stats: p_text += f"** Receiving Yards:** {stats.get('Receiving Yards', 'N/A')} (Confidence: {stats.get('Receiving Yards_confidence', 0)}%)\n"
+                if 'Passing TDs' in stats: p_text += f"** Passing TDs:** {stats.get('Passing TDs', 'N/A')} (Confidence: {stats.get('Passing TDs_confidence', 0)}%)\n"
+                if 'Rushing TDs' in stats: p_text += f"** Rushing TDs:** {stats.get('Rushing TDs', 'N/A')} (Confidence: {stats.get('Rushing TDs_confidence', 0)}%)\n"
+                if 'Receiving TDs' in stats: p_text += f"** Receiving TDs:** {stats.get('Receiving TDs', 'N/A')} (Confidence: {stats.get('Receiving TDs_confidence', 0)}%)\n"
+                if 'Interceptions' in stats: p_text += f"** Interceptions:** {stats.get('Interceptions', 'N/A')} (Confidence: {stats.get('Interceptions_confidence', 0)}%)\n"
                 return p_text + "\n"
 
             analysis_text += format_player(home_qb_name, player_stats.get(home_qb_name, {}))

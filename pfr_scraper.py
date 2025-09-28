@@ -4,6 +4,7 @@ import re
 import time
 import pandas as pd
 import gspread
+import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 

@@ -39,28 +39,13 @@ def get_api_data(endpoint, params):
         print(f"  -> API request failed for endpoint '{endpoint}': {e}")
         return []
 
-def get_game_day_roster(team_full_name, stats_df, depth_chart_df, pos_config):
-    if stats_df.empty or depth_chart_df.empty: return pd.DataFrame(), pd.DataFrame()
-    
-    team_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == team_full_name].copy()
-    team_depth_chart['Depth'] = pd.to_numeric(team_depth_chart['Depth'], errors='coerce')
-    team_depth_chart.sort_values('Depth', inplace=True)
-
-    active_roster_players = []
-    top_healthy_players = pd.DataFrame()
-
-    for pos, num_players in pos_config.items():
-        pos_depth_all = team_depth_chart[team_depth_chart['Position'] == pos]
-        healthy_players = pos_depth_all[pos_depth_all['Status'] == 'Healthy']
-        
-        active_players_for_pos = healthy_players.head(num_players)
-        active_roster_players.extend(active_players_for_pos['Player'].tolist())
-        
-        top_healthy_players = pd.concat([top_healthy_players, healthy_players.head(1)])
-            
-    roster_stats_df = stats_df[stats_df['Player'].isin(active_roster_players)]
-    
-    return roster_stats_df, top_healthy_players
+def get_top_healthy_player_name(team_df, position):
+    """Gets the name of the top healthy player for a given position from a team's depth chart."""
+    position_df = team_df[team_df['Position'] == position]
+    healthy_df = position_df[position_df['Status'] == 'Healthy']
+    if not healthy_df.empty:
+        return healthy_df.iloc[0]['Player']
+    return "[Not Available]"
 
 def find_or_create_row(worksheet, away_team, home_team, kickoff_str):
     all_sheet_data = worksheet.get_all_values()
@@ -111,19 +96,19 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         worksheet.clear()
         time.sleep(1)
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=100, cols=8)
+        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=100, cols=9)
     
-    headers = ["Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", "Prediction Analysis", "Actual Winner", "Actual Score"]
+    headers = ["Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", "Confidence", "Prediction Analysis", "Actual Winner", "Actual Score"]
     worksheet.update('A1', [headers])
     worksheet.freeze(rows=1)
     fmt = CellFormat(wrapStrategy='WRAP')
-    format_cell_range(worksheet, 'F:F', fmt)
+    format_cell_range(worksheet, 'G:G', fmt)
 
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
     
     print("--- Initializing Vertex AI ---")
     vertexai.init()
-    model = GenerativeModel("gemini-2.5-pro")
+    model = GenerativeModel("gemini-1.5-pro")
     
     safety_settings = {
         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
@@ -133,15 +118,15 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     }
     
     depth_chart_df = dataframes.get('Depth_Charts', pd.DataFrame())
+    depth_chart_df['Depth'] = pd.to_numeric(depth_chart_df['Depth'], errors='coerce')
+    depth_chart_df.sort_values(['Team', 'Position', 'Depth'], inplace=True)
+    
     player_stats_current = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving'] if name in dataframes], ignore_index=True)
-    player_stats_previous = pd.concat([dataframes.get(name, pd.DataFrame()) for name in [f'{YEAR-1}_O_Player_Passing', f'{YEAR-1}_O_Player_Rushing', f'{YEAR-1}_O_Player_Receiving'] if name in dataframes], ignore_index=True)
+    
     team_offense_df = dataframes.get('O_Team_Overall', pd.DataFrame())
     
     master_team_map = {row[col]: row['Full Name'] for _, row in team_map_df.iterrows() for col in team_map_df.columns if pd.notna(row[col]) and row[col]}
-
-    for df, team_col in [(depth_chart_df, 'Team'), (player_stats_current, 'Tm'), (player_stats_previous, 'Tm'), (team_offense_df, 'Tm')]:
-        if not df.empty and team_col in df.columns:
-            df['Team_Full'] = df[team_col].map(master_team_map)
+    depth_chart_df['Team_Full'] = depth_chart_df['Team'].map(master_team_map)
 
     for index, game in this_weeks_games.iterrows():
         away_team_full, home_team_full = game['Away Team'], game['Home Team']
@@ -150,18 +135,19 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         kickoff_display_str = game['datetime'].astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
         row_num = find_or_create_row(worksheet, away_team_full, home_team_full, kickoff_display_str)
         
-        pos_config = {'QB': 1, 'RB': 1, 'WR': 1}
-        home_roster_stats, home_top_players = get_game_day_roster(home_team_full, player_stats_current, depth_chart_df, pos_config)
-        away_roster_stats, away_top_players = get_game_day_roster(away_team_full, player_stats_current, depth_chart_df, pos_config)
-        
-        home_qb_name = home_top_players[home_top_players['Position'] == 'QB']['Player'].iloc[0] if not home_top_players[home_top_players['Position'] == 'QB'].empty else "[Not Available]"
-        away_qb_name = away_top_players[away_top_players['Position'] == 'QB']['Player'].iloc[0] if not away_top_players[away_top_players['Position'] == 'QB'].empty else "[Not Available]"
-        home_rb_name = home_top_players[home_top_players['Position'] == 'RB']['Player'].iloc[0] if not home_top_players[home_top_players['Position'] == 'RB'].empty else "[Not Available]"
-        away_rb_name = away_top_players[away_top_players['Position'] == 'RB']['Player'].iloc[0] if not away_top_players[away_top_players['Position'] == 'RB'].empty else "[Not Available]"
-        home_wr_name = home_top_players[home_top_players['Position'] == 'WR']['Player'].iloc[0] if not home_top_players[home_top_players['Position'] == 'WR'].empty else "[Not Available]"
-        away_wr_name = away_top_players[away_top_players['Position'] == 'WR']['Player'].iloc[0] if not away_top_players[away_top_players['Position'] == 'WR'].empty else "[Not Available]"
+        home_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == home_team_full]
+        away_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == away_team_full]
 
-        # ### --- FINAL PROMPT UPGRADE WITH NUMERICAL CONFIDENCE --- ###
+        home_qb_name = get_top_healthy_player_name(home_depth_chart, 'QB')
+        away_qb_name = get_top_healthy_player_name(away_depth_chart, 'QB')
+        home_rb_name = get_top_healthy_player_name(home_depth_chart, 'RB')
+        away_rb_name = get_top_healthy_player_name(away_depth_chart, 'RB')
+        home_wr_name = get_top_healthy_player_name(home_depth_chart, 'WR')
+        away_wr_name = get_top_healthy_player_name(away_depth_chart, 'WR')
+
+        player_names_for_stats = [p for p in [home_qb_name, away_qb_name, home_rb_name, away_rb_name, home_wr_name, away_wr_name] if p != "[Not Available]"]
+        roster_stats = player_stats_current[player_stats_current['Player'].isin(player_names_for_stats)]
+
         matchup_prompt = f"""
         You are an expert sports analyst and data scientist. Your task is to provide a detailed prediction analysis for an upcoming NFL game.
         Analyze the matchup between the {away_team_full} (Away) and {home_team_full} (Home) using the provided data and player names.
@@ -175,16 +161,15 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         - Away WR: {away_wr_name}
 
         ## Data for Analysis:
-        ### {home_team_full} (Home)
-        - **Team Standings ({YEAR}):** {team_offense_df[team_offense_df['Team_Full'] == home_team_full].to_string()}
-        - **Top Healthy Player Stats ({YEAR}):** {home_roster_stats.to_string()}
-        ---
-        ### {away_team_full} (Away)
-        - **Team Standings ({YEAR}):** {team_offense_df[team_offense_df['Team_Full'] == away_team_full].to_string()}
-        - **Top Healthy Player Stats ({YEAR}):** {away_roster_stats.to_string()}
+        ### Team Standings ({YEAR}):
+        {team_offense_df[team_offense_df['Tm'].isin([home_team_full, away_team_full])].to_string()}
+        
+        ### Top Healthy Player Stats ({YEAR}):
+        {roster_stats.to_string()}
         ---
         Based on your analysis, provide your complete response ONLY as a single, valid JSON object with no markdown.
         Your response must follow this exact schema. For every 'confidence' field, you MUST provide an integer between 1 and 100.
+        If a player's name is '[Not Available]', you must omit them from the 'player_stats' object.
 
         {{
           "game_prediction": {{
@@ -194,14 +179,13 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
             "score_confidence": 70
           }},
           "justification": "string",
-          "touchdown_scorers": ["string", "string"],
+          "touchdown_scorers": [
+              {{ "player_name": "string", "confidence": 75 }},
+              {{ "player_name": "string", "confidence": 60 }}
+          ],
           "player_stats": {{
-            "{home_qb_name}": {{ "Passing Yards": 250, "Passing Yards_confidence": 65, "Rushing Yards": 10, "Rushing Yards_confidence": 50, "Passing TDs": 2, "Passing TDs_confidence": 70, "Interceptions": 1, "Interceptions_confidence": 60 }},
-            "{away_qb_name}": {{ "Passing Yards": 220, "Passing Yards_confidence": 65, "Rushing Yards": 15, "Rushing Yards_confidence": 50, "Passing TDs": 1, "Passing TDs_confidence": 70, "Interceptions": 1, "Interceptions_confidence": 60 }},
-            "{home_rb_name}": {{ "Rushing Yards": 80, "Rushing Yards_confidence": 70, "Rushing TDs": 1, "Rushing TDs_confidence": 75 }},
-            "{away_rb_name}": {{ "Rushing Yards": 60, "Rushing Yards_confidence": 70, "Rushing TDs": 0, "Rushing TDs_confidence": 75 }},
-            "{home_wr_name}": {{ "Receiving Yards": 90, "Receiving Yards_confidence": 65, "Receiving TDs": 1, "Receiving TDs_confidence": 70 }},
-            "{away_wr_name}": {{ "Receiving Yards": 75, "Receiving Yards_confidence": 65, "Receiving TDs": 0, "Receiving TDs_confidence": 70 }}
+            "Player Name 1": {{ "Passing Yards": 250, "Passing Yards_confidence": 65, "Rushing Yards": 10, "Rushing Yards_confidence": 50, "Passing TDs": 2, "Passing TDs_confidence": 70, "Interceptions": 1, "Interceptions_confidence": 60 }},
+            "Player Name 2": {{ "Rushing Yards": 80, "Rushing Yards_confidence": 70, "Rushing TDs": 1, "Rushing TDs_confidence": 75 }}
           }}
         }}
         """
@@ -209,25 +193,23 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
             response = model.generate_content(matchup_prompt, safety_settings=safety_settings)
             pred_json = json.loads(clean_json_response(response.text))
 
-            # ### --- UPGRADED FORMATTER FOR NUMERICAL CONFIDENCE --- ###
             game_pred = pred_json.get("game_prediction", {})
             winner = game_pred.get("winner", "N/A")
             winner_conf = game_pred.get("winner_confidence", 0)
             score = game_pred.get("score", "N/A")
-            score_conf = game_pred.get("score_confidence", 0)
-
+            
             justification = pred_json.get("justification", "No justification provided.")
             td_scorers = pred_json.get("touchdown_scorers", [])
             player_stats = pred_json.get("player_stats", {})
 
             analysis_text = f"**1. Game Prediction:**\n"
-            analysis_text += f"***Predicted Winner:** {winner} (Confidence: {winner_conf}%)\n"
-            analysis_text += f"***Predicted Final Score:** {score} (Confidence: {score_conf}%)\n\n"
+            analysis_text += f"***Predicted Winner:** {winner}\n"
+            analysis_text += f"***Predicted Final Score:** {score}\n\n"
             
             analysis_text += f"**2. Key Player Stat Predictions:**\n"
             
             def format_player(name, stats):
-                if not stats or name == "[Not Available]": return f"***{name}***\n\n"
+                if not stats or name == "[Not Available]": return ""
                 p_text = f"***{name}:**\n"
                 if 'Passing Yards' in stats: p_text += f"** Passing Yards:** {stats.get('Passing Yards', 'N/A')} (Confidence: {stats.get('Passing Yards_confidence', 0)}%)\n"
                 if 'Rushing Yards' in stats: p_text += f"** Rushing Yards:** {stats.get('Rushing Yards', 'N/A')} (Confidence: {stats.get('Rushing Yards_confidence', 0)}%)\n"
@@ -247,12 +229,14 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
 
             analysis_text += f"**3. Touchdown Scorers:**\n"
             for scorer in td_scorers:
-                analysis_text += f"** {scorer}\n"
+                player_name = scorer.get("player_name", "N/A")
+                confidence = scorer.get("confidence", 0)
+                analysis_text += f"** {player_name} (Confidence: {confidence}%)\n"
             analysis_text += "\n"
 
             analysis_text += f"**4. Justification:**\n{justification}"
 
-            worksheet.update(f'D{row_num}:F{row_num}', [[winner, score, analysis_text.strip()]])
+            worksheet.update(f'D{row_num}:G{row_num}', [[winner, score, f"{winner_conf}%", analysis_text.strip()]])
             print(f"    -> SUCCESS: Wrote formatted prediction for {away_team_full} vs {home_team_full}")
         except Exception as e:
             print(f"    -> ERROR: Could not generate or parse prediction: {e}")
@@ -293,9 +277,9 @@ def run_results_mode(spreadsheet, dataframes, now_utc):
         actual_winner_col_index = pred_headers.index("Actual Winner") + 1
         actual_score_col_index = pred_headers.index("Actual Score") + 1
     except (ValueError, IndexError):
-        worksheet_pred.update('G1:H1', [['Actual Winner', 'Actual Score']])
-        actual_winner_col_index = 7
-        actual_score_col_index = 8
+        worksheet_pred.update('H1:I1', [['Actual Winner', 'Actual Score']])
+        actual_winner_col_index = 8
+        actual_score_col_index = 9
         
     all_player_stats_for_week = []
     for index, game in games_to_update.iterrows():

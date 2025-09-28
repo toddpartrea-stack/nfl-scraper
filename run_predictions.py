@@ -39,13 +39,31 @@ def get_api_data(endpoint, params):
         print(f"  -> API request failed for endpoint '{endpoint}': {e}")
         return []
 
+# ### --- UPGRADED FUNCTION WITH INJURY LOGIC --- ###
 def get_game_day_roster(team_full_name, stats_df, depth_chart_df, pos_config):
+    """
+    Creates an active roster for predictions, EXCLUDING any players who are not listed as 'Healthy'.
+    """
     if stats_df.empty or depth_chart_df.empty: return pd.DataFrame()
+    
+    # Prepare the team's depth chart, ensuring 'Depth' is a number for sorting
     team_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == team_full_name].copy()
+    team_depth_chart['Depth'] = pd.to_numeric(team_depth_chart['Depth'], errors='coerce')
+    team_depth_chart.sort_values('Depth', inplace=True)
+
     active_roster_players = []
     for pos, num_players in pos_config.items():
-        pos_depth = team_depth_chart[team_depth_chart['Position'] == pos].head(num_players)
-        active_roster_players.extend(pos_depth['Player'].tolist())
+        # Get all players at the specified position
+        pos_depth_all = team_depth_chart[team_depth_chart['Position'] == pos]
+        
+        # Filter that list for ONLY healthy players
+        healthy_players = pos_depth_all[pos_depth_all['Status'] == 'Healthy']
+        
+        # Take the top N players from the remaining healthy list
+        active_players_for_pos = healthy_players.head(num_players)
+        
+        active_roster_players.extend(active_players_for_pos['Player'].tolist())
+            
     roster_df = stats_df[stats_df['Player'].isin(active_roster_players)]
     return roster_df
 
@@ -109,7 +127,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     
     print("--- Initializing Vertex AI ---")
     vertexai.init()
-    model = GenerativeModel("gemini-2.5-pro") # Set to your working model
+    model = GenerativeModel("gemini-1.5-pro")
     
     depth_chart_df = dataframes.get('Depth_Charts', pd.DataFrame())
     player_stats_current = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving'] if name in dataframes], ignore_index=True)
@@ -139,21 +157,22 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         
         matchup_prompt = f"""
         You are an expert sports analyst and gambler with a deep understanding of NFL data. Your task is to provide a detailed prediction analysis for an upcoming game.
-        Analyze the matchup between the {away_team_full} (Away) and {home_team_full} (Home) using the provided data.
+        Analyze the matchup between the {away_team_full} (Away) and {home_team_full} (Home) using the provided data. The provided player stats ONLY include healthy, active players.
+
         ## Data for Analysis:
         ### {home_team_full} (Home)
         - **Team Standings ({YEAR}):** {home_team_stats.to_string()}
-        - **Top Player Stats ({YEAR}):** {home_roster_stats.to_string()}
+        - **Top Healthy Player Stats ({YEAR}):** {home_roster_stats.to_string()}
         ---
         ### {away_team_full} (Away)
         - **Team Standings ({YEAR}):** {away_team_stats.to_string()}
-        - **Top Player Stats ({YEAR}):** {away_roster_stats.to_string()}
+        - **Top Healthy Player Stats ({YEAR}):** {away_roster_stats.to_string()}
         ---
         Based on your analysis, provide your complete response as a single block of markdown-formatted text. Your response must follow this structure exactly, including all asterisks, numbering, and spacing:
 
         **1. Game Prediction:**
-        ***Predicted Winner:** [Team Name] (Likelihood: [Percent])
-        ***Predicted Final Score:** [Team A Score] - [Team B Score] (Likelihood: [Percent])
+        ***Predicted Winner:** [Team Name]
+        ***Predicted Final Score:** [Team A Score] - [Team B Score]
 
         **2. Key Player Stat Predictions:**
         ***[Home Team QB Name]:**
@@ -196,9 +215,8 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
             
             prediction_text = response.text
             
-            # ### --- FINAL FIX: UPDATED REGEX TO MATCH THE PROMPT'S FORMATTING --- ###
-            winner_match = re.search(r"\*\*\*Predicted Winner:\*\*\s*(.*)", prediction_text)
-            score_match = re.search(r"\*\*\*Predicted Final Score:\*\*\s*(.*)", prediction_text)
+            winner_match = re.search(r"Predicted Winner:\s*\*\*(.*?)\*\*", prediction_text)
+            score_match = re.search(r"Predicted Final Score:\s*\*\*(.*?)\*\*", prediction_text)
             
             winner = winner_match.group(1).strip() if winner_match else "N/A"
             score = score_match.group(1).strip() if score_match else "N/A"

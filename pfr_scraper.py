@@ -4,7 +4,7 @@ import re
 import time
 import pandas as pd
 import gspread
-import requests
+import requests 
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
@@ -19,7 +19,6 @@ API_HOST = "v1.american-football.api-sports.io"
 
 # --- AUTHENTICATION & HELPERS ---
 def get_gspread_client():
-    # FINAL FIX: Bypassing the broken .auth.default() and using a direct, explicit method
     credential_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
     if not credential_path:
         raise ValueError("Could not find Google credentials path. The auth step in the workflow may have failed.")
@@ -35,9 +34,9 @@ def write_to_sheet(spreadsheet, sheet_name, dataframe):
         worksheet.clear()
         time.sleep(1)
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=len(dataframe.columns))
+        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=2000, cols=len(dataframe.columns))
     
-    dataframe = dataframe.astype(str).fillna('')
+    dataframe = dataframe.astype(str).fillna('0')
     data_to_upload = [dataframe.columns.values.tolist()] + dataframe.values.tolist()
     
     worksheet.update(data_to_upload, value_input_option='USER_ENTERED')
@@ -61,7 +60,6 @@ def calculate_nfl_week(df):
     
     regular_season_games = df[df['game_date'].dt.month >= 9]
     if regular_season_games.empty:
-        print("  -> Warning: No games found in or after September. Week calculation may be incorrect.")
         season_start_date = df['game_date'].min()
     else:
         season_start_date = regular_season_games['game_date'].min()
@@ -69,8 +67,7 @@ def calculate_nfl_week(df):
     start_of_week1 = season_start_date - pd.to_timedelta(season_start_date.weekday() - 3, unit='d')
     
     def get_week(date):
-        if date < start_of_week1:
-            return 0
+        if date < start_of_week1: return 0
         return ((date - start_of_week1).days // 7) + 1
 
     df['Week'] = df['game_date'].apply(get_week)
@@ -87,7 +84,7 @@ if __name__ == "__main__":
         gc = get_gspread_client()
         spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
     except Exception as e:
-        print(f"❌ CRITICAL ERROR: Could not connect to Google Sheets. Check Service Account setup. Error: {e}")
+        print(f"❌ CRITICAL ERROR: Could not connect to Google Sheets. Error: {e}")
         exit()
 
     print(f"\n--- Fetching Official Schedule from API ({CURRENT_YEAR}) ---")
@@ -101,6 +98,7 @@ if __name__ == "__main__":
             write_to_sheet(spreadsheet, "Schedule", schedule_df)
     except Exception as e:
         print(f"❌ Could not process Schedule from API: {e}")
+        
     print(f"\n--- Fetching Team Standings from API ({CURRENT_YEAR}) ---")
     try:
         standings_data = get_api_data("standings", {"league": "1", "season": str(CURRENT_YEAR)})
@@ -111,9 +109,13 @@ if __name__ == "__main__":
             write_to_sheet(spreadsheet, "D_Overall", df[['Tm', 'PA']].copy())
     except Exception as e:
         print(f"❌ Could not process Team Standings: {e}")
+
     for year_to_fetch in [CURRENT_YEAR, PREVIOUS_YEAR]:
         print(f"\n--- Fetching Player Stats from API ({year_to_fetch}) ---")
-        all_players_stats = []
+        
+        # This list is correctly defined inside the loop, ensuring it's fresh for each year
+        all_players_stats = [] 
+        
         try:
             teams_data = get_api_data("teams", {"league": "1", "season": year_to_fetch})
             team_ids = [team['id'] for team in teams_data if team]
@@ -122,25 +124,40 @@ if __name__ == "__main__":
                 player_stats_data = get_api_data("players/statistics", {"team": team_id, "season": year_to_fetch})
                 if player_stats_data: all_players_stats.extend(player_stats_data)
                 time.sleep(1.5)
+
             if all_players_stats:
+                # These lists are also correctly defined inside the loop, preventing data leakage between years
                 passing, rushing, receiving = [], [], []
+                
                 for p_data in all_players_stats:
                     player_info = p_data.get('player', {})
                     if not p_data.get('teams'): continue
                     team_level_data = p_data['teams'][0]
                     team_info = team_level_data.get('team', {})
-                    base_stats = {'Player':player_info.get('name'),'Tm':team_info.get('name'),'G':0}
+                    base_stats = {'Player':player_info.get('name'),'Tm':team_info.get('name')}
                     for group in team_level_data.get('groups', []):
                         stats = {s['name']: s['value'] for s in group.get('statistics', [])}
                         if group.get('name') == 'Passing': passing.append({**base_stats, **stats})
                         elif group.get('name') == 'Rushing': rushing.append({**base_stats, **stats})
                         elif group.get('name') == 'Receiving': receiving.append({**base_stats, **stats})
+                
                 prefix = "" if year_to_fetch == CURRENT_YEAR else f"{year_to_fetch}_"
-                write_to_sheet(spreadsheet, f"{prefix}O_Player_Passing", pd.DataFrame(passing))
-                write_to_sheet(spreadsheet, f"{prefix}O_Player_Rushing", pd.DataFrame(rushing))
-                write_to_sheet(spreadsheet, f"{prefix}O_Player_Receiving", pd.DataFrame(receiving))
+                
+                df_passing = pd.DataFrame(passing)
+                df_rushing = pd.DataFrame(rushing)
+                df_receiving = pd.DataFrame(receiving)
+
+                # De-duplication step to handle API data issues
+                if not df_passing.empty: df_passing.drop_duplicates(subset=['Player'], keep='last', inplace=True)
+                if not df_rushing.empty: df_rushing.drop_duplicates(subset=['Player'], keep='last', inplace=True)
+                if not df_receiving.empty: df_receiving.drop_duplicates(subset=['Player'], keep='last', inplace=True)
+
+                write_to_sheet(spreadsheet, f"{prefix}O_Player_Passing", df_passing)
+                write_to_sheet(spreadsheet, f"{prefix}O_Player_Rushing", df_rushing)
+                write_to_sheet(spreadsheet, f"{prefix}O_Player_Receiving", df_receiving)
         except Exception as e:
             print(f"❌ Could not process Player Stats for {year_to_fetch}: {e}")
+            
     print("\n--- Scraping FootballGuys.com Depth Charts ---")
     try:
         url = "https://www.footballguys.com/depth-charts"
@@ -168,4 +185,5 @@ if __name__ == "__main__":
             write_to_sheet(spreadsheet, "Depth_Charts", pd.DataFrame(all_players))
     except Exception as e:
         print(f"❌ Could not process Depth Charts: {e}")
+        
     print("\n✅ Scraper script finished.")

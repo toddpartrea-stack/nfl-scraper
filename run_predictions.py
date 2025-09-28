@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from datetime import datetime, timezone
 import vertexai
 from vertexai.generative_models import GenerativeModel
-# UPDATED: Importing the correct formatting functions
 from gspread_formatting import CellFormat, format_cell_range
 
 load_dotenv()
@@ -103,7 +102,6 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     worksheet.update('A1', [headers])
     worksheet.freeze(rows=1)
 
-    # ### --- FINAL FIX: Using the correct method for text wrapping --- ###
     fmt = CellFormat(wrapStrategy='WRAP')
     format_cell_range(worksheet, 'F:F', fmt)
 
@@ -111,7 +109,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     
     print("--- Initializing Vertex AI ---")
     vertexai.init()
-    model = GenerativeModel("gemini-2.5-pro")
+    model = GenerativeModel("gemini-2.5-pro") # Set to your working model
     
     depth_chart_df = dataframes.get('Depth_Charts', pd.DataFrame())
     player_stats_current = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving'] if name in dataframes], ignore_index=True)
@@ -198,8 +196,9 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
             
             prediction_text = response.text
             
-            winner_match = re.search(r"Predicted Winner:\s*\*\*(.*?)\*\*", prediction_text)
-            score_match = re.search(r"Predicted Final Score:\s*\*\*(.*?)\*\*", prediction_text)
+            # ### --- FINAL FIX: UPDATED REGEX TO MATCH THE PROMPT'S FORMATTING --- ###
+            winner_match = re.search(r"\*\*\*Predicted Winner:\*\*\s*(.*)", prediction_text)
+            score_match = re.search(r"\*\*\*Predicted Final Score:\*\*\s*(.*)", prediction_text)
             
             winner = winner_match.group(1).strip() if winner_match else "N/A"
             score = score_match.group(1).strip() if score_match else "N/A"

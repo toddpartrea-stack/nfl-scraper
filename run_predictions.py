@@ -41,18 +41,25 @@ def get_api_data(endpoint, params):
 
 def get_game_day_roster(team_full_name, stats_df, depth_chart_df, pos_config):
     if stats_df.empty or depth_chart_df.empty: return pd.DataFrame(), pd.DataFrame()
+    
     team_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == team_full_name].copy()
     team_depth_chart['Depth'] = pd.to_numeric(team_depth_chart['Depth'], errors='coerce')
     team_depth_chart.sort_values('Depth', inplace=True)
+
     active_roster_players = []
     top_healthy_players = pd.DataFrame()
+
     for pos, num_players in pos_config.items():
         pos_depth_all = team_depth_chart[team_depth_chart['Position'] == pos]
         healthy_players = pos_depth_all[pos_depth_all['Status'] == 'Healthy']
+        
         active_players_for_pos = healthy_players.head(num_players)
         active_roster_players.extend(active_players_for_pos['Player'].tolist())
+        
         top_healthy_players = pd.concat([top_healthy_players, healthy_players.head(1)])
+            
     roster_stats_df = stats_df[stats_df['Player'].isin(active_roster_players)]
+    
     return roster_stats_df, top_healthy_players
 
 def find_or_create_row(worksheet, away_team, home_team, kickoff_str):
@@ -116,7 +123,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     
     print("--- Initializing Vertex AI ---")
     vertexai.init()
-    model = GenerativeModel("gemini-2.5-pro")
+    model = GenerativeModel("gemini-1.5-pro")
     
     safety_settings = {
         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
@@ -154,6 +161,8 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         home_wr_name = home_top_players[home_top_players['Position'] == 'WR']['Player'].iloc[0] if not home_top_players[home_top_players['Position'] == 'WR'].empty else "[Not Available]"
         away_wr_name = away_top_players[away_top_players['Position'] == 'WR']['Player'].iloc[0] if not away_top_players[away_top_players['Position'] == 'WR'].empty else "[Not Available]"
 
+        # ### --- FINAL PROMPT UPGRADE --- ###
+        # This version includes a strict JSON template to ensure all fields are always returned.
         matchup_prompt = f"""
         You are an expert sports analyst and data scientist. Your task is to provide a detailed prediction analysis for an upcoming NFL game.
         Analyze the matchup between the {away_team_full} (Away) and {home_team_full} (Home) using the provided data and player names.
@@ -176,8 +185,22 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         - **Top Healthy Player Stats ({YEAR}):** {away_roster_stats.to_string()}
         ---
         Based on your analysis, provide your complete response ONLY as a single, valid JSON object with no markdown.
-        The JSON must contain keys for "winner", "score", "justification", "touchdown_scorers", and "player_stats".
-        The "player_stats" value must be an object containing keys for each of the 6 key players you were given, with predicted stats for each. If you don't have enough data for a player, omit their stats from the prediction.
+        Your response must follow this exact schema. Fill in a value for every field.
+
+        {{
+          "winner": "string",
+          "score": "string",
+          "justification": "string",
+          "touchdown_scorers": ["string", "string"],
+          "player_stats": {{
+            "{home_qb_name}": {{ "Passing Yards": "number", "Passing Yards Likelihood": "string", "Rushing Yards": "number", "Rushing Yards Likelihood": "string", "Passing TDs": "number", "Passing TDs Likelihood": "string", "Interceptions": "number", "Interceptions Likelihood": "string" }},
+            "{away_qb_name}": {{ "Passing Yards": "number", "Passing Yards Likelihood": "string", "Rushing Yards": "number", "Rushing Yards Likelihood": "string", "Passing TDs": "number", "Passing TDs Likelihood": "string", "Interceptions": "number", "Interceptions Likelihood": "string" }},
+            "{home_rb_name}": {{ "Rushing Yards": "number", "Rushing Yards Likelihood": "string", "Rushing TDs": "number", "Rushing TDs Likelihood": "string" }},
+            "{away_rb_name}": {{ "Rushing Yards": "number", "Rushing Yards Likelihood": "string", "Rushing TDs": "number", "Rushing TDs Likelihood": "string" }},
+            "{home_wr_name}": {{ "Receiving Yards": "number", "Receiving Yards Likelihood": "string", "Receiving TDs": "number", "Receiving TDs Likelihood": "string" }},
+            "{away_wr_name}": {{ "Receiving Yards": "number", "Receiving Yards Likelihood": "string", "Receiving TDs": "number", "Receiving TDs Likelihood": "string" }}
+          }}
+        }}
         """
         try:
             response = model.generate_content(matchup_prompt, safety_settings=safety_settings)
@@ -196,15 +219,15 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
             analysis_text += f"**2. Key Player Stat Predictions:**\n"
             
             def format_player(name, stats):
-                if not stats: return ""
+                if not stats or name == "[Not Available]": return f"***{name}***\n\n"
                 p_text = f"***{name}:**\n"
-                if 'Passing Yards' in stats: p_text += f"** Passing Yards:** {stats.get('Passing Yards')} (Likelihood: {stats.get('Passing Yards Likelihood')})\n"
-                if 'Rushing Yards' in stats: p_text += f"** Rushing Yards:** {stats.get('Rushing Yards')} (Likelihood: {stats.get('Rushing Yards Likelihood')})\n"
-                if 'Receiving Yards' in stats: p_text += f"** Receiving Yards:** {stats.get('Receiving Yards')} (Likelihood: {stats.get('Receiving Yards Likelihood')})\n"
-                if 'Passing TDs' in stats: p_text += f"** Passing TDs:** {stats.get('Passing TDs')} (Likelihood: {stats.get('Passing TDs Likelihood')})\n"
-                if 'Rushing TDs' in stats: p_text += f"** Rushing TDs:** {stats.get('Rushing TDs')} (Likelihood: {stats.get('Rushing TDs Likelihood')})\n"
-                if 'Receiving TDs' in stats: p_text += f"** Receiving TDs:** {stats.get('Receiving TDs')} (Likelihood: {stats.get('Receiving TDs Likelihood')})\n"
-                if 'Interceptions' in stats: p_text += f"** Interceptions:** {stats.get('Interceptions')} (Likelihood: {stats.get('Interceptions Likelihood')})\n"
+                if 'Passing Yards' in stats: p_text += f"** Passing Yards:** {stats.get('Passing Yards', 'N/A')} (Likelihood: {stats.get('Passing Yards Likelihood', 'N/A')})\n"
+                if 'Rushing Yards' in stats: p_text += f"** Rushing Yards:** {stats.get('Rushing Yards', 'N/A')} (Likelihood: {stats.get('Rushing Yards Likelihood', 'N/A')})\n"
+                if 'Receiving Yards' in stats: p_text += f"** Receiving Yards:** {stats.get('Receiving Yards', 'N/A')} (Likelihood: {stats.get('Receiving Yards Likelihood', 'N/A')})\n"
+                if 'Passing TDs' in stats: p_text += f"** Passing TDs:** {stats.get('Passing TDs', 'N/A')} (Likelihood: {stats.get('Passing TDs Likelihood', 'N/A')})\n"
+                if 'Rushing TDs' in stats: p_text += f"** Rushing TDs:** {stats.get('Rushing TDs', 'N/A')} (Likelihood: {stats.get('Rushing TDs Likelihood', 'N/A')})\n"
+                if 'Receiving TDs' in stats: p_text += f"** Receiving TDs:** {stats.get('Receiving TDs', 'N/A')} (Likelihood: {stats.get('Receiving TDs Likelihood', 'N/A')})\n"
+                if 'Interceptions' in stats: p_text += f"** Interceptions:** {stats.get('Interceptions', 'N/A')} (Likelihood: {stats.get('Interceptions Likelihood', 'N/A')})\n"
                 return p_text + "\n"
 
             analysis_text += format_player(home_qb_name, player_stats.get(home_qb_name, {}))
@@ -225,7 +248,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
             print(f"    -> SUCCESS: Wrote formatted prediction for {away_team_full} vs {home_team_full}")
         except Exception as e:
             print(f"    -> ERROR: Could not generate or parse prediction: {e}")
-            if 'response' in locals() and response.candidates:
+            if 'response' in locals() and hasattr(response, 'candidates') and response.candidates:
                 print(f"    -> AI Response Finish Reason: {response.candidates[0].finish_reason}")
                 print(f"    -> AI Response Safety Ratings: {response.candidates[0].safety_ratings}")
         time.sleep(5)

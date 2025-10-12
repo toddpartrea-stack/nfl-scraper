@@ -39,13 +39,14 @@ def get_api_data(endpoint, params):
         print(f"  -> API request failed for endpoint '{endpoint}': {e}")
         return []
 
-def get_top_healthy_player_name(team_df, position):
-    """Gets the name of the top healthy player for a given position from a team's depth chart."""
+def get_top_healthy_player_names(team_df, position, num_players=1):
+    """Gets the names of the top N healthy players for a given position from a team's depth chart."""
     position_df = team_df[team_df['Position'] == position]
     healthy_df = position_df[position_df['Status'] == 'Healthy']
-    if not healthy_df.empty:
-        return healthy_df.iloc[0]['Player']
-    return "[Not Available]"
+    players = healthy_df.head(num_players)['Player'].tolist()
+    while len(players) < num_players:
+        players.append("[Not Available]")
+    return players
 
 def find_or_create_row(worksheet, away_team, home_team, kickoff_str):
     all_sheet_data = worksheet.get_all_values()
@@ -96,19 +97,19 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         worksheet.clear()
         time.sleep(1)
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=100, cols=9)
+        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=100, cols=8)
     
-    headers = ["Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", "Confidence", "Prediction Analysis", "Actual Winner", "Actual Score"]
+    headers = ["Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", "Prediction Analysis", "Actual Winner", "Actual Score"]
     worksheet.update('A1', [headers])
     worksheet.freeze(rows=1)
     fmt = CellFormat(wrapStrategy='WRAP')
-    format_cell_range(worksheet, 'G:G', fmt)
+    format_cell_range(worksheet, 'F:F', fmt)
 
     this_weeks_games = schedule_df[schedule_df['Week'] == current_week]
     
     print("--- Initializing Vertex AI ---")
     vertexai.init()
-    model = GenerativeModel("gemini-2.5-pro")
+    model = GenerativeModel("gemini-1.5-pro")
     
     safety_settings = {
         HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
@@ -122,7 +123,6 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
     depth_chart_df.sort_values(['Team', 'Position', 'Depth'], inplace=True)
     
     player_stats_current = pd.concat([dataframes.get(name, pd.DataFrame()) for name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving'] if name in dataframes], ignore_index=True)
-    
     team_offense_df = dataframes.get('O_Team_Overall', pd.DataFrame())
     
     master_team_map = {row[col]: row['Full Name'] for _, row in team_map_df.iterrows() for col in team_map_df.columns if pd.notna(row[col]) and row[col]}
@@ -138,27 +138,39 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         home_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == home_team_full]
         away_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == away_team_full]
 
-        home_qb_name = get_top_healthy_player_name(home_depth_chart, 'QB')
-        away_qb_name = get_top_healthy_player_name(away_depth_chart, 'QB')
-        home_rb_name = get_top_healthy_player_name(home_depth_chart, 'RB')
-        away_rb_name = get_top_healthy_player_name(away_depth_chart, 'RB')
-        home_wr_name = get_top_healthy_player_name(home_depth_chart, 'WR')
-        away_wr_name = get_top_healthy_player_name(away_depth_chart, 'WR')
-
-        player_names_for_stats = [p for p in [home_qb_name, away_qb_name, home_rb_name, away_rb_name, home_wr_name, away_wr_name] if p != "[Not Available]"]
+        player_map = {
+            "home_qb": get_top_healthy_player_names(home_depth_chart, 'QB', 1)[0],
+            "away_qb": get_top_healthy_player_names(away_depth_chart, 'QB', 1)[0],
+            "home_rb1": get_top_healthy_player_names(home_depth_chart, 'RB', 2)[0],
+            "home_rb2": get_top_healthy_player_names(home_depth_chart, 'RB', 2)[1],
+            "away_rb1": get_top_healthy_player_names(away_depth_chart, 'RB', 2)[0],
+            "away_rb2": get_top_healthy_player_names(away_depth_chart, 'RB', 2)[1],
+            "home_wr1": get_top_healthy_player_names(home_depth_chart, 'WR', 3)[0],
+            "home_wr2": get_top_healthy_player_names(home_depth_chart, 'WR', 3)[1],
+            "home_wr3": get_top_healthy_player_names(home_depth_chart, 'WR', 3)[2],
+            "away_wr1": get_top_healthy_player_names(away_depth_chart, 'WR', 3)[0],
+            "away_wr2": get_top_healthy_player_names(away_depth_chart, 'WR', 3)[1],
+            "away_wr3": get_top_healthy_player_names(away_depth_chart, 'WR', 3)[2],
+            "home_te": get_top_healthy_player_names(home_depth_chart, 'TE', 1)[0],
+            "away_te": get_top_healthy_player_names(away_depth_chart, 'TE', 1)[0],
+        }
+        
+        player_names_for_stats = [name for name in player_map.values() if name != "[Not Available]"]
         roster_stats = player_stats_current[player_stats_current['Player'].isin(player_names_for_stats)]
 
         matchup_prompt = f"""
         You are an expert sports analyst and data scientist. Your task is to provide a detailed prediction analysis for an upcoming NFL game.
-        Analyze the matchup between the {away_team_full} (Away) and {home_team_full} (Home) using the provided data and player names.
-
-        The top healthy players at key positions are:
-        - Home QB: {home_qb_name}
-        - Away QB: {away_qb_name}
-        - Home RB: {home_rb_name}
-        - Away RB: {away_rb_name}
-        - Home WR: {home_wr_name}
-        - Away WR: {away_wr_name}
+        Analyze the matchup between the {away_team_full} (Away) and {home_team_full} (Home) using the provided data and the list of key players.
+        
+        ## Key Players to Predict For:
+        - Home QB: {player_map['home_qb']}
+        - Away QB: {player_map['away_qb']}
+        - Home RB1: {player_map['home_rb1']}, Home RB2: {player_map['home_rb2']}
+        - Away RB1: {player_map['away_rb1']}, Away RB2: {player_map['away_rb2']}
+        - Home WR1: {player_map['home_wr1']}, Home WR2: {player_map['home_wr2']}, Home WR3: {player_map['home_wr3']}
+        - Away WR1: {player_map['away_wr1']}, Away WR2: {player_map['away_wr2']}, Away WR3: {player_map['away_wr3']}
+        - Home TE: {player_map['home_te']}
+        - Away TE: {player_map['away_te']}
 
         ## Data for Analysis:
         ### Team Standings ({YEAR}):
@@ -168,24 +180,20 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         {roster_stats.to_string()}
         ---
         Based on your analysis, provide your complete response ONLY as a single, valid JSON object with no markdown.
-        Your response must follow this exact schema. For every 'confidence' field, you MUST provide an integer between 1 and 100.
-        If a player's name is '[Not Available]', you must omit them from the 'player_stats' object.
+        Your response **MUST** follow this exact schema. You **MUST** provide a prediction for every key player listed above, unless their name is '[Not Available]'.
+        For every 'confidence' field, you **MUST** provide an integer between 1 and 100.
 
         {{
-          "game_prediction": {{
-            "winner": "string",
-            "winner_confidence": 85,
-            "score": "string",
-            "score_confidence": 70
-          }},
+          "game_prediction": {{ "winner": "string", "winner_confidence": 85, "score": "string", "score_confidence": 70 }},
           "justification": "string",
-          "touchdown_scorers": [
-              {{ "player_name": "string", "confidence": 75 }},
-              {{ "player_name": "string", "confidence": 60 }}
-          ],
+          "touchdown_scorers": [ {{ "player_name": "string", "confidence": 75 }} ],
           "player_stats": {{
-            "Player Name 1": {{ "Passing Yards": 250, "Passing Yards_confidence": 65, "Rushing Yards": 10, "Rushing Yards_confidence": 50, "Passing TDs": 2, "Passing TDs_confidence": 70, "Interceptions": 1, "Interceptions_confidence": 60 }},
-            "Player Name 2": {{ "Rushing Yards": 80, "Rushing Yards_confidence": 70, "Rushing TDs": 1, "Rushing TDs_confidence": 75 }}
+            "{player_map['home_qb']}": {{ "Passing Yards": 0, "Passing Yards_confidence": 0, "Rushing Yards": 0, "Rushing Yards_confidence": 0, "Passing TDs": 0, "Passing TDs_confidence": 0, "Interceptions": 0, "Interceptions_confidence": 0 }},
+            "{player_map['away_qb']}": {{ "Passing Yards": 0, "Passing Yards_confidence": 0, "Rushing Yards": 0, "Rushing Yards_confidence": 0, "Passing TDs": 0, "Passing TDs_confidence": 0, "Interceptions": 0, "Interceptions_confidence": 0 }},
+            "{player_map['home_rb1']}": {{ "Rushing Yards": 0, "Rushing Yards_confidence": 0, "Rushing TDs": 0, "Rushing TDs_confidence": 0 }},
+            "{player_map['away_rb1']}": {{ "Rushing Yards": 0, "Rushing Yards_confidence": 0, "Rushing TDs": 0, "Rushing TDs_confidence": 0 }},
+            "{player_map['home_wr1']}": {{ "Receiving Yards": 0, "Receiving Yards_confidence": 0, "Receiving TDs": 0, "Receiving TDs_confidence": 0 }}
+            "{player_map['away_wr1']}": {{ "Receiving Yards": 0, "Receiving Yards_confidence": 0, "Receiving TDs": 0, "Receiving TDs_confidence": 0 }}
           }}
         }}
         """
@@ -195,7 +203,6 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
 
             game_pred = pred_json.get("game_prediction", {})
             winner = game_pred.get("winner", "N/A")
-            winner_conf = game_pred.get("winner_confidence", 0)
             score = game_pred.get("score", "N/A")
             
             justification = pred_json.get("justification", "No justification provided.")
@@ -203,8 +210,8 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
             player_stats = pred_json.get("player_stats", {})
 
             analysis_text = f"**1. Game Prediction:**\n"
-            analysis_text += f"***Predicted Winner:** {winner}\n"
-            analysis_text += f"***Predicted Final Score:** {score}\n\n"
+            analysis_text += f"***Predicted Winner:** {winner} (Confidence: {game_pred.get('winner_confidence', 0)}%)\n"
+            analysis_text += f"***Predicted Final Score:** {score} (Confidence: {game_pred.get('score_confidence', 0)}%)\n\n"
             
             analysis_text += f"**2. Key Player Stat Predictions:**\n"
             
@@ -220,12 +227,8 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
                 if 'Interceptions' in stats: p_text += f"** Interceptions:** {stats.get('Interceptions', 'N/A')} (Confidence: {stats.get('Interceptions_confidence', 0)}%)\n"
                 return p_text + "\n"
 
-            analysis_text += format_player(home_qb_name, player_stats.get(home_qb_name, {}))
-            analysis_text += format_player(away_qb_name, player_stats.get(away_qb_name, {}))
-            analysis_text += format_player(home_rb_name, player_stats.get(home_rb_name, {}))
-            analysis_text += format_player(away_rb_name, player_stats.get(away_rb_name, {}))
-            analysis_text += format_player(home_wr_name, player_stats.get(home_wr_name, {}))
-            analysis_text += format_player(away_wr_name, player_stats.get(away_wr_name, {}))
+            for player_key, player_name in player_map.items():
+                analysis_text += format_player(player_name, player_stats.get(player_name, {}))
 
             analysis_text += f"**3. Touchdown Scorers:**\n"
             for scorer in td_scorers:
@@ -236,7 +239,7 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
 
             analysis_text += f"**4. Justification:**\n{justification}"
 
-            worksheet.update(f'D{row_num}:G{row_num}', [[winner, score, f"{winner_conf}%", analysis_text.strip()]])
+            worksheet.update(f'D{row_num}:F{row_num}', [[winner, score, analysis_text.strip()]])
             print(f"    -> SUCCESS: Wrote formatted prediction for {away_team_full} vs {home_team_full}")
         except Exception as e:
             print(f"    -> ERROR: Could not generate or parse prediction: {e}")
@@ -277,9 +280,9 @@ def run_results_mode(spreadsheet, dataframes, now_utc):
         actual_winner_col_index = pred_headers.index("Actual Winner") + 1
         actual_score_col_index = pred_headers.index("Actual Score") + 1
     except (ValueError, IndexError):
-        worksheet_pred.update('H1:I1', [['Actual Winner', 'Actual Score']])
-        actual_winner_col_index = 8
-        actual_score_col_index = 9
+        worksheet_pred.update('G1:H1', [['Actual Winner', 'Actual Score']])
+        actual_winner_col_index = 7
+        actual_score_col_index = 8
         
     all_player_stats_for_week = []
     for index, game in games_to_update.iterrows():

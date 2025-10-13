@@ -95,9 +95,9 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         worksheet.clear()
         time.sleep(1)
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=100, cols=8)
+        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=100, cols=6)
     
-    headers = ["Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", "Prediction Analysis", "Actual Winner", "Actual Score"]
+    headers = ["Away Team", "Home Team", "Kickoff", "Predicted Winner", "Predicted Score", "Prediction Analysis"]
     worksheet.update('A1', [headers])
     worksheet.freeze(rows=1)
     fmt = CellFormat(wrapStrategy='WRAP')
@@ -116,7 +116,6 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
     }
     
-    # Correctly prepared dataframes from the main() function
     depth_chart_df = dataframes.get('Depth_Charts')
     player_stats_current = dataframes.get('player_stats_current')
     team_offense_df = dataframes.get('O_Team_Overall')
@@ -138,7 +137,6 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         home_roster_stats = player_stats_current[player_stats_current['Player'].isin(home_player_names)]
         away_roster_stats = player_stats_current[player_stats_current['Player'].isin(away_player_names)]
 
-        # ### --- UPGRADE: Stricter prompt to prevent hallucinations --- ###
         matchup_prompt = f"""
         You are an expert sports analyst and data scientist. Your task is to provide a detailed prediction analysis for an upcoming NFL game.
         **Your primary directive is to base your analysis exclusively on the data provided below. Do not use any prior knowledge.**
@@ -160,15 +158,61 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         Your response must contain keys for "game_prediction", "justification", "top_performers", and "touchdown_scorers".
         
         - In "top_performers", you MUST include the starting QB and top RB for each team. You can then add 1-2 other impactful players (WRs/TEs) from each team.
-        - The "defensive_td_prediction" should be an object with a boolean 'will_occur' and a 'confidence' integer.
         - For every 'confidence' field, you MUST provide an integer between 1 and 100.
+
+        Example JSON schema:
+        {{
+          "game_prediction": {{ "winner": "string", "winner_confidence": 85, "score": "string", "score_confidence": 70 }},
+          "justification": "string",
+          "top_performers": [
+              {{ "player_name": "string", "team": "string", "predicted_stats": {{ "Passing Yards": 250, "Passing Yards_confidence": 65 }} }},
+              {{ "player_name": "string", "team": "string", "predicted_stats": {{ "Rushing Yards": 80, "Rushing Yards_confidence": 70 }} }}
+          ],
+          "touchdown_scorers": [ {{ "player_name": "string", "confidence": 75 }} ]
+        }}
         """
         try:
             response = model.generate_content(matchup_prompt, safety_settings=safety_settings)
             pred_json = json.loads(clean_json_response(response.text))
 
-            # ... (Formatting logic remains the same)
+            game_pred = pred_json.get("game_prediction", {})
+            winner = game_pred.get("winner", "N/A")
+            score = game_pred.get("score", "N/A")
             
+            justification = pred_json.get("justification", "No justification provided.")
+            top_performers = pred_json.get("top_performers", [])
+            td_scorers = pred_json.get("touchdown_scorers", [])
+
+            analysis_text = f"**1. Game Prediction:**\n"
+            analysis_text += f"***Predicted Winner:** {winner} (Confidence: {game_pred.get('winner_confidence', 0)}%)\n"
+            analysis_text += f"***Predicted Final Score:** {score} (Confidence: {game_pred.get('score_confidence', 0)}%)\n\n"
+            
+            analysis_text += f"**2. Top Performer Stat Predictions:**\n"
+            if not top_performers:
+                analysis_text += "No key performers identified.\n\n"
+            else:
+                for player in top_performers:
+                    stats = player.get("predicted_stats", {})
+                    p_text = f"***{player.get('player_name', 'N/A')} ({player.get('team', 'N/A')}):**\n"
+                    if 'Passing Yards' in stats: p_text += f"** Passing Yards:** {stats.get('Passing Yards', 'N/A')} (Confidence: {stats.get('Passing Yards_confidence', 0)}%)\n"
+                    if 'Rushing Yards' in stats: p_text += f"** Rushing Yards:** {stats.get('Rushing Yards', 'N/A')} (Confidence: {stats.get('Rushing Yards_confidence', 0)}%)\n"
+                    if 'Receiving Yards' in stats: p_text += f"** Receiving Yards:** {stats.get('Receiving Yards', 'N/A')} (Confidence: {stats.get('Receiving Yards_confidence', 0)}%)\n"
+                    if 'Passing TDs' in stats: p_text += f"** Passing TDs:** {stats.get('Passing TDs', 'N/A')} (Confidence: {stats.get('Passing TDs_confidence', 0)}%)\n"
+                    if 'Rushing TDs' in stats: p_text += f"** Rushing TDs:** {stats.get('Rushing TDs', 'N/A')} (Confidence: {stats.get('Rushing TDs_confidence', 0)}%)\n"
+                    if 'Receiving TDs' in stats: p_text += f"** Receiving TDs:** {stats.get('Receiving TDs', 'N/A')} (Confidence: {stats.get('Receiving TDs_confidence', 0)}%)\n"
+                    if 'Interceptions' in stats: p_text += f"** Interceptions:** {stats.get('Interceptions', 'N/A')} (Confidence: {stats.get('Interceptions_confidence', 0)}%)\n"
+                    analysis_text += p_text + "\n"
+
+            analysis_text += f"**3. Touchdown Scorers:**\n"
+            for scorer in td_scorers:
+                player_name = scorer.get("player_name", "N/A")
+                confidence = scorer.get("confidence", 0)
+                analysis_text += f"** {player_name} (Confidence: {confidence}%)\n"
+            analysis_text += "\n"
+
+            analysis_text += f"**4. Justification:**\n{justification}"
+
+            worksheet.update(f'D{row_num}:F{row_num}', [[winner, score, analysis_text.strip()]])
             print(f"    -> SUCCESS: Wrote formatted prediction for {away_team_full} vs {home_team_full}")
         except Exception as e:
             print(f"    -> ERROR: Could not generate or parse prediction: {e}")
@@ -176,8 +220,6 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
                 print(f"    -> AI Response Finish Reason: {response.candidates[0].finish_reason}")
                 print(f"    -> AI Response Safety Ratings: {response.candidates[0].safety_ratings}")
         time.sleep(5)
-
-# The run_results_mode is removed as per your request
 
 def main():
     if not API_KEY:
@@ -198,6 +240,7 @@ def main():
             data = worksheet.get_all_values()
             if data and len(data) > 1:
                 df = pd.DataFrame(data[1:], columns=data[0])
+                # Data cleaning step to fix name mismatches
                 if 'Player' in df.columns:
                     df['Player'] = df['Player'].str.strip()
                 dataframes[title] = df
@@ -206,28 +249,23 @@ def main():
     if not all(sheet in dataframes for sheet in required_data_sheets):
         print("❌ CRITICAL ERROR: Could not load required player data tabs.")
         return
-
-    # ### --- UPGRADE: Data Unification Step --- ###
+        
     print("\n--- Unifying Team Names Across All Data Sources ---")
     team_map_df = dataframes['team_match']
     master_team_map = {row[col]: row['Full Name'] for _, row in team_map_df.iterrows() for col in team_map_df.columns if pd.notna(row[col]) and row[col]}
     
-    # Apply the master map to all relevant dataframes
+    team_name_columns = ['Tm', 'Team', 'Away Team', 'Home Team']
     for name, df in dataframes.items():
-        team_col = None
-        if 'Tm' in df.columns:
-            team_col = 'Tm'
-        elif 'Team' in df.columns:
-            team_col = 'Team'
-        
-        if team_col:
-            # Create the unified 'Team_Full' column
-            df['Team_Full'] = df[team_col].map(master_team_map)
-            # Fill any non-matches with the original name to be safe
-            df['Team_Full'].fillna(df[team_col], inplace=True)
-            dataframes[name] = df
-
-    # Re-build player_stats_current with unified names, although this is less critical
+        for col in team_name_columns:
+            if col in df.columns:
+                # Apply the map to a new 'Team_Full' column or overwrite if it's the main team col
+                if col == 'Tm' or col == 'Team':
+                    df['Team_Full'] = df[col].map(master_team_map)
+                    df['Team_Full'].fillna(df[col], inplace=True)
+                else: # For schedule, just map directly
+                    df[col] = df[col].map(master_team_map).fillna(df[col])
+        dataframes[name] = df
+    
     dataframes['player_stats_current'] = pd.concat([
         dataframes.get('O_Player_Passing', pd.DataFrame()),
         dataframes.get('O_Player_Rushing', pd.DataFrame()),

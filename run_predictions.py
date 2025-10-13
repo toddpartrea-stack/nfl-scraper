@@ -28,6 +28,14 @@ def get_gspread_client():
         raise ValueError("Could not find Google credentials path. The auth step in the workflow may have failed.")
     return gspread.service_account(filename=credential_path)
 
+def normalize_player_name(name):
+    """Removes suffixes (Jr, Sr, II, etc.) and punctuation for reliable matching."""
+    if not isinstance(name, str):
+        return name
+    name = re.sub(r'\s+(Jr|Sr|II|III|IV|V)\.?$', '', name, flags=re.IGNORECASE)
+    name = name.replace('.', '')
+    return name.strip()
+
 def get_api_data(endpoint, params):
     url = f"https://{API_HOST}/{endpoint}"
     headers = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": API_HOST}
@@ -134,13 +142,15 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         home_player_names = {p for pos, num in pos_config.items() for p in get_top_healthy_player_names(home_depth_chart, pos, num) if p != "[Not Available]"}
         away_player_names = {p for pos, num in pos_config.items() for p in get_top_healthy_player_names(away_depth_chart, pos, num) if p != "[Not Available]"}
         
-        home_roster_stats = player_stats_current[player_stats_current['Player'].isin(home_player_names)]
-        away_roster_stats = player_stats_current[player_stats_current['Player'].isin(away_player_names)]
+        home_player_names_normalized = {normalize_player_name(p) for p in home_player_names}
+        away_player_names_normalized = {normalize_player_name(p) for p in away_player_names}
+        
+        home_roster_stats = player_stats_current[player_stats_current['Player_Normalized'].isin(home_player_names_normalized)]
+        away_roster_stats = player_stats_current[player_stats_current['Player_Normalized'].isin(away_player_names_normalized)]
 
         matchup_prompt = f"""
         You are an expert sports analyst and data scientist. Your task is to provide a detailed prediction analysis for an upcoming NFL game.
         **Your primary directive is to base your analysis exclusively on the data provided below. Do not use any prior knowledge.**
-
         Analyze the matchup between the {away_team_full} (Away) and {home_team_full} (Home).
 
         ## Data for Analysis:
@@ -154,10 +164,8 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         {away_roster_stats.to_string()}
         ---
         Based on your analysis of ONLY the data provided, provide your complete response as a single, valid JSON object with no markdown.
-
         Your response must contain keys for "game_prediction", "justification", "top_performers", and "touchdown_scorers".
-        
-        - In "top_performers", you MUST include the starting QB and top RB for each team. You can then add 1-2 other impactful players (WRs/TEs) from each team.
+        - In "top_performers", identify the 3-4 most impactful offensive players from EACH team.
         - For every 'confidence' field, you MUST provide an integer between 1 and 100.
 
         Example JSON schema:
@@ -240,16 +248,10 @@ def main():
             data = worksheet.get_all_values()
             if data and len(data) > 1:
                 df = pd.DataFrame(data[1:], columns=data[0])
-                # Data cleaning step to fix name mismatches
                 if 'Player' in df.columns:
-                    df['Player'] = df['Player'].str.strip()
+                    df['Player_Normalized'] = df['Player'].apply(normalize_player_name)
                 dataframes[title] = df
 
-    required_data_sheets = ['Schedule', 'team_match', 'O_Player_Passing']
-    if not all(sheet in dataframes for sheet in required_data_sheets):
-        print("❌ CRITICAL ERROR: Could not load required player data tabs.")
-        return
-        
     print("\n--- Unifying Team Names Across All Data Sources ---")
     team_map_df = dataframes['team_match']
     master_team_map = {row[col]: row['Full Name'] for _, row in team_map_df.iterrows() for col in team_map_df.columns if pd.notna(row[col]) and row[col]}
@@ -258,19 +260,17 @@ def main():
     for name, df in dataframes.items():
         for col in team_name_columns:
             if col in df.columns:
-                # Apply the map to a new 'Team_Full' column or overwrite if it's the main team col
                 if col == 'Tm' or col == 'Team':
-                    df['Team_Full'] = df[col].map(master_team_map)
-                    df['Team_Full'].fillna(df[col], inplace=True)
-                else: # For schedule, just map directly
+                    df['Team_Full'] = df[col].map(master_team_map).fillna(df[col])
+                else:
                     df[col] = df[col].map(master_team_map).fillna(df[col])
         dataframes[name] = df
     
-    dataframes['player_stats_current'] = pd.concat([
-        dataframes.get('O_Player_Passing', pd.DataFrame()),
-        dataframes.get('O_Player_Rushing', pd.DataFrame()),
-        dataframes.get('O_Player_Receiving', pd.DataFrame())
-    ], ignore_index=True)
+    player_stat_dfs = []
+    for sheet_name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']:
+        if sheet_name in dataframes:
+            player_stat_dfs.append(dataframes[sheet_name])
+    dataframes['player_stats_current'] = pd.concat(player_stat_dfs, ignore_index=True)
 
 
     eastern_tz = pytz.timezone('US/Eastern')

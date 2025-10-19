@@ -7,7 +7,7 @@ import pytz
 import gspread
 import requests
 from dotenv import load_dotenv
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import vertexai
 from vertexai.generative_models import GenerativeModel, HarmCategory, HarmBlockThreshold
 from gspread_formatting import CellFormat, format_cell_range
@@ -16,10 +16,49 @@ load_dotenv()
 
 # --- CONFIGURATION ---
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
-API_KEY = os.getenv('AMERICAN_FOOTBALL_API_KEY')
-API_HOST = "v1.american-football.api-sports.io"
+FOOTBALL_API_KEY = os.getenv('AMERICAN_FOOTBALL_API_KEY')
+FOOTBALL_API_HOST = "v1.american-football.api-sports.io"
+# No weather API key needed!
 YEAR = 2025
 MANUAL_WEEK_OVERRIDE = None
+
+# --- TEAM LOCATION MAP (Latitude/Longitude) ---
+# Used as the coordinate source for the NWS API
+TEAM_LOCATION_MAP = {
+    "Arizona Cardinals": {"lat": 33.5276, "lon": -112.2626},
+    "Atlanta Falcons": {"lat": 33.7554, "lon": -84.4009},
+    "Baltimore Ravens": {"lat": 39.2780, "lon": -76.6227},
+    "Buffalo Bills": {"lat": 42.7738, "lon": -78.7869},
+    "Carolina Panthers": {"lat": 35.2259, "lon": -80.8529},
+    "Chicago Bears": {"lat": 41.8623, "lon": -87.6167},
+    "Cincinnati Bengals": {"lat": 39.0955, "lon": -84.5160},
+    "Cleveland Browns": {"lat": 41.5061, "lon": -81.6995},
+    "Dallas Cowboys": {"lat": 32.7479, "lon": -97.0928},
+    "Denver Broncos": {"lat": 39.7439, "lon": -105.0201},
+    "Detroit Lions": {"lat": 42.3400, "lon": -83.0456},
+    "Green Bay Packers": {"lat": 44.5013, "lon": -88.0622},
+    "Houston Texans": {"lat": 29.6847, "lon": -95.4109},
+    "Indianapolis Colts": {"lat": 39.7601, "lon": -86.1639},
+    "Jacksonville Jaguars": {"lat": 30.3239, "lon": -81.6373},
+    "Kansas City Chiefs": {"lat": 39.0489, "lon": -94.4839},
+    "Las Vegas Raiders": {"lat": 36.0908, "lon": -115.1837},
+    "Los Angeles Chargers": {"lat": 33.9534, "lon": -118.3390},
+    "Los Angeles Rams": {"lat": 33.9534, "lon": -118.3390},
+    "Miami Dolphins": {"lat": 25.9580, "lon": -80.2389},
+    "Minnesota Vikings": {"lat": 44.9736, "lon": -93.2580},
+    "New England Patriots": {"lat": 42.0909, "lon": -71.2643},
+    "New Orleans Saints": {"lat": 29.9509, "lon": -90.0812},
+    "New York Giants": {"lat": 40.8135, "lon": -74.0745},
+    "New York Jets": {"lat": 40.8135, "lon": -74.0745},
+    "Philadelphia Eagles": {"lat": 39.9008, "lon": -75.1675},
+    "Pittsburgh Steelers": {"lat": 40.4467, "lon": -80.0158},
+    "San Francisco 49ers": {"lat": 37.4032, "lon": -121.9697},
+    "Seattle Seahawks": {"lat": 47.5952, "lon": -122.3316},
+    "Tampa Bay Buccaneers": {"lat": 27.9759, "lon": -82.5033},
+    "Tennessee Titans": {"lat": 36.1665, "lon": -86.7713},
+    "Washington Commanders": {"lat": 38.9077, "lon": -76.8645}
+}
+
 
 # --- AUTHENTICATION & HELPERS ---
 def get_gspread_client():
@@ -37,8 +76,9 @@ def normalize_player_name(name):
     return name.strip()
 
 def get_api_data(endpoint, params):
-    url = f"https://{API_HOST}/{endpoint}"
-    headers = {"x-rapidapi-key": API_KEY, "x-rapidapi-host": API_HOST}
+    # This is for the football API
+    url = f"https://{FOOTBALL_API_HOST}/{endpoint}"
+    headers = {"x-rapidapi-key": FOOTBALL_API_KEY, "x-rapidapi-host": FOOTBALL_API_HOST}
     try:
         response = requests.get(url, headers=headers, params=params, timeout=30)
         response.raise_for_status()
@@ -46,6 +86,84 @@ def get_api_data(endpoint, params):
     except requests.exceptions.RequestException as e:
         print(f"  -> API request failed for endpoint '{endpoint}': {e}")
         return []
+
+# --- NEW: NWS WEATHER HELPER FUNCTION (FREE, NO KEY) ---
+def get_weather_forecast(city, country, home_team, game_datetime_utc):
+    """
+    Fetches weather for the game's specific venue using the free NWS API.
+    NWS API is US-Only, so it checks country first.
+    Falls back to home team's default stadium coordinates.
+    """
+    
+    # NWS API is US-only. Check for known non-US countries.
+    if country and country.lower() not in ["united states", "usa", "us", "n/a", "", None]:
+        return f"Weather not available (non-US game: {city}, {country})"
+    
+    # Check if game is within the 7-day forecast window
+    now_utc = datetime.now(timezone.utc)
+    days_until_game = (game_datetime_utc.date() - now_utc.date()).days
+    
+    if days_until_game < 0:
+        return "Game has already passed."
+    if days_until_game > 6: # NWS provides 7 days, so 0-6 is valid
+        return "Forecast not yet available (game is >7 days away)."
+
+    # Get coordinates from our fallback map
+    if home_team not in TEAM_LOCATION_MAP:
+        return f"Weather not available (team '{home_team}' not in US stadium map)."
+        
+    coords = TEAM_LOCATION_MAP[home_team]
+    lat, lon = coords['lat'], coords['lon']
+    
+    # NWS API requires a User-Agent.
+    # You can customize this if you want, but a generic one is fine.
+    headers = {
+        "User-Agent": "NFL-Prediction-Script (github.com/google/generative-ai-docs)"
+    }
+    
+    try:
+        # --- Step 1: Get the gridpoint URL from NWS ---
+        # This tells us *which* NWS office covers this lat/lon
+        points_url = f"https://api.weather.gov/points/{lat:.4f},{lon:.4f}"
+        response = requests.get(points_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        grid_url = response.json()['properties']['forecast']
+        
+        # --- Step 2: Get the actual forecast from that grid URL ---
+        response = requests.get(grid_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        forecast_data = response.json()
+        
+        # --- Step 3: Parse the forecast periods to find the right day ---
+        game_date = game_datetime_utc.date()
+        
+        # NWS gives day/night periods. We need to find the one that matches our game time.
+        # We'll look for the first period that starts ON the game day.
+        for period in forecast_data['properties']['periods']:
+            period_start_time = datetime.fromisoformat(period['startTime'])
+            
+            if period_start_time.date() == game_date:
+                # Found the first period for the game day. This is our forecast.
+                period_name = period['name'] # e.g., "Sunday" or "Sunday Night"
+                temp = period['temperature']
+                wind_speed = period['windSpeed']
+                short_forecast = period['shortForecast']
+                
+                return (
+                    f"Forecast for {city} ({period_name}): {short_forecast}. "
+                    f"Temp: {temp}°{period.get('temperatureUnit', 'F')}. "
+                    f"Wind: {wind_speed}."
+                )
+                
+        return "Forecast data not found for game day."
+
+    except requests.exceptions.RequestException as e:
+        print(f"  -> NWS Weather API request failed: {e}")
+        return "Error fetching NWS weather data."
+    except Exception as e:
+        print(f"  -> Error processing NWS weather data: {e}")
+        return "Error processing NWS weather."
+
 
 def get_top_healthy_player_names(team_df, position, num_players=1):
     position_df = team_df[team_df['Position'] == position]
@@ -130,11 +248,29 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
 
     for index, game in this_weeks_games.iterrows():
         away_team_full, home_team_full = game['Away Team'], game['Home Team']
-        print(f"\n--- Predicting: {away_team_full} at {home_team_full} ---")
+        game_time_utc = game['datetime']
         
-        kickoff_display_str = game['datetime'].astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
+        # --- Get venue from schedule ---
+        venue_city = game.get('Venue_City', 'N/A')
+        venue_country = game.get('Venue_Country', 'N/A')
+        
+        print(f"\n--- Predicting: {away_team_full} at {home_team_full} ---")
+        print(f"  -> Venue: {venue_city}, {venue_country}")
+        
+        kickoff_display_str = game_time_utc.astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
         row_num = find_or_create_row(worksheet, away_team_full, home_team_full, kickoff_display_str)
         
+        # --- Get live weather forecast using NWS API ---
+        print("  -> Fetching live weather forecast...")
+        weather_forecast_str = get_weather_forecast(
+            venue_city, 
+            venue_country, 
+            home_team_full, # Used for lat/lon lookup
+            game_time_utc
+        )
+        print(f"  -> Weather: {weather_forecast_str}")
+        # --- END NEW ---
+
         home_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == home_team_full]
         away_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == away_team_full]
 
@@ -148,15 +284,21 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         home_roster_stats = player_stats_current[player_stats_current['Player_Normalized'].isin(home_player_names_normalized)]
         away_roster_stats = player_stats_current[player_stats_current['Player_Normalized'].isin(away_player_names_normalized)]
 
+        # --- UPDATED PROMPT ---
         matchup_prompt = f"""
         You are an expert sports analyst and data scientist. Your task is to provide a detailed prediction analysis for an upcoming NFL game.
         **Your primary directive is to base your analysis exclusively on the data provided below. Do not use any prior knowledge.**
         Analyze the matchup between the {away_team_full} (Away) and {home_team_full} (Home).
+        You MUST factor in the provided weather forecast, especially if it indicates high winds, rain, or snow, which typically favors the running game and defense.
+        If the weather forecast is not available, proceed with the analysis based on the player and team stats alone.
 
         ## Data for Analysis:
         ### Team Standings ({YEAR}):
         {team_offense_df[team_offense_df['Team_Full'].isin([home_team_full, away_team_full])].to_string()}
         
+        ### Weather Forecast:
+        {weather_forecast_str}
+
         ### Home Team - Healthy Player Stats ({YEAR}):
         {home_roster_stats.to_string()}
 
@@ -179,6 +321,8 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
           "touchdown_scorers": [ {{ "player_name": "string", "confidence": 75 }} ]
         }}
         """
+        # --- END UPDATED PROMPT ---
+
         try:
             response = model.generate_content(matchup_prompt, safety_settings=safety_settings)
             pred_json = json.loads(clean_json_response(response.text))
@@ -230,10 +374,10 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         time.sleep(5)
 
 def main():
-    if not API_KEY:
-        print("❌ CRITICAL ERROR: API_KEY secret not found.")
+    if not FOOTBALL_API_KEY:
+        print("❌ CRITICAL ERROR: AMERICAN_FOOTBALL_API_KEY secret not found.")
         return
-
+    
     print("Authenticating with Google Sheets...")
     gc = get_gspread_client()
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
@@ -253,8 +397,12 @@ def main():
                 dataframes[title] = df
 
     print("\n--- Unifying Team Names Across All Data Sources ---")
+    if 'team_match' not in dataframes:
+        print("❌ CRITICAL ERROR: 'team_match' tab not found. Cannot unify team names.")
+        return
+        
     team_map_df = dataframes['team_match']
-    master_team_map = {row[col]: row['Full Name'] for _, row in team_map_df.iterrows() for col in team_map_df.columns if pd.notna(row[col]) and row[col]}
+    master_team_map = {row[col]: row[col]: row['Full Name'] for _, row in team_map_df.iterrows() for col in team_map_df.columns if pd.notna(row[col]) and row[col]}
     
     team_name_columns = ['Tm', 'Team', 'Away Team', 'Home Team']
     for name, df in dataframes.items():
@@ -270,13 +418,29 @@ def main():
     for sheet_name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']:
         if sheet_name in dataframes:
             player_stat_dfs.append(dataframes[sheet_name])
+    
+    if not player_stat_dfs:
+        print("❌ CRITICAL ERROR: No player stats tabs (O_Player_Passing, etc.) found.")
+        return
+        
     dataframes['player_stats_current'] = pd.concat(player_stat_dfs, ignore_index=True)
 
 
     eastern_tz = pytz.timezone('US/Eastern')
     now_utc = datetime.now(timezone.utc)
     
+    if 'Schedule' not in dataframes:
+        print("❌ CRITICAL ERROR: 'Schedule' tab not found. Cannot determine games to predict.")
+        return
+        
     schedule_df = dataframes['Schedule']
+    
+    # Check for the schedule columns we need for weather
+    if 'Venue_Country' not in schedule_df.columns:
+        print("❌ CRITICAL ERROR: 'Schedule' tab is missing 'Venue_Country'.")
+        print("  -> Please re-run the 'pfr_scraper.py' script from our previous conversation to update the sheet.")
+        return
+    
     schedule_df = schedule_df[schedule_df['Date'] != 'Date'].copy()
     datetime_str = schedule_df['Date'] + " " + schedule_df['Time']
     schedule_df['datetime'] = pd.to_datetime(datetime_str, format='%Y-%m-%d %H:%M', errors='coerce').dt.tz_localize('UTC')

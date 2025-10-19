@@ -91,11 +91,30 @@ if __name__ == "__main__":
     try:
         games_data = get_api_data("games", {"league": "1", "season": str(CURRENT_YEAR)})
         if games_data:
-            schedule_list = [{'GameID': i.get('game', {}).get('id'),'Week': 'N/A','Date': i.get('game', {}).get('date', {}).get('date'),'Time': i.get('game', {}).get('date', {}).get('time'),'Away Team': i.get('teams', {}).get('away', {}).get('name'),'Home Team': i.get('teams', {}).get('home', {}).get('name')} for i in games_data]
+            schedule_list = []
+            for i in games_data:
+                game_info = i.get('game', {})
+                date_info = game_info.get('date', {})
+                team_info = i.get('teams', {})
+                venue_info = game_info.get('venue', {}) # <-- Get venue object
+                
+                schedule_list.append({
+                    'GameID': game_info.get('id'),
+                    'Week': 'N/A',
+                    'Date': date_info.get('date'),
+                    'Time': date_info.get('time'),
+                    'Away Team': team_info.get('away', {}).get('name'),
+                    'Home Team': team_info.get('home', {}).get('name'),
+                    'Venue_City': venue_info.get('city'),     # <-- Get city
+                    'Venue_Country': venue_info.get('country') # <-- Get country
+                })
+
             schedule_df = pd.DataFrame(schedule_list)
             schedule_df = calculate_nfl_week(schedule_df)
             schedule_df = schedule_df[schedule_df['Week'] > 0].copy()
-            write_to_sheet(spreadsheet, "Schedule", schedule_df)
+            # Ensure new columns are included in the write
+            cols = ['GameID', 'Week', 'Date', 'Time', 'Away Team', 'Home Team', 'Venue_City', 'Venue_Country']
+            write_to_sheet(spreadsheet, "Schedule", schedule_df[cols])
     except Exception as e:
         print(f"❌ Could not process Schedule from API: {e}")
         
@@ -113,7 +132,6 @@ if __name__ == "__main__":
     for year_to_fetch in [CURRENT_YEAR, PREVIOUS_YEAR]:
         print(f"\n--- Fetching Player Stats from API ({year_to_fetch}) ---")
         
-        # This list is correctly defined inside the loop, ensuring it's fresh for each year
         all_players_stats = [] 
         
         try:
@@ -126,7 +144,6 @@ if __name__ == "__main__":
                 time.sleep(1.5)
 
             if all_players_stats:
-                # These lists are also correctly defined inside the loop, preventing data leakage between years
                 passing, rushing, receiving = [], [], []
                 
                 for p_data in all_players_stats:
@@ -147,14 +164,13 @@ if __name__ == "__main__":
                 df_rushing = pd.DataFrame(rushing)
                 df_receiving = pd.DataFrame(receiving)
 
-                # De-duplication step to handle API data issues
                 if not df_passing.empty: df_passing.drop_duplicates(subset=['Player'], keep='last', inplace=True)
                 if not df_rushing.empty: df_rushing.drop_duplicates(subset=['Player'], keep='last', inplace=True)
                 if not df_receiving.empty: df_receiving.drop_duplicates(subset=['Player'], keep='last', inplace=True)
 
                 write_to_sheet(spreadsheet, f"{prefix}O_Player_Passing", df_passing)
-                write_to_sheet(spreadsheet, f"{prefix}O_Player_Rushing", df_rushing)
                 write_to_sheet(spreadsheet, f"{prefix}O_Player_Receiving", df_receiving)
+                write_to_sheet(spreadsheet, f"{prefix}O_Player_Rushing", df_rushing)
         except Exception as e:
             print(f"❌ Could not process Player Stats for {year_to_fetch}: {e}")
             

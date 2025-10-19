@@ -289,8 +289,13 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         You are an expert sports analyst and data scientist. Your task is to provide a detailed prediction analysis for an upcoming NFL game.
         **Your primary directive is to base your analysis exclusively on the data provided below. Do not use any prior knowledge.**
         Analyze the matchup between the {away_team_full} (Away) and {home_team_full} (Home).
-        You MUST factor in the provided weather forecast, especially if it indicates high winds, rain, or snow, which typically favors the running game and defense.
-        If the weather forecast is not available, proceed with the analysis based on the player and team stats alone.
+        
+        ## AI Analysis Directives:
+        You MUST follow these rules when analyzing the weather's impact:
+        1.  **HIGH WIND (20+ mph):** This is the most significant factor. High winds severely NEGATIVELY impact passing yards, passing accuracy (especially deep throws), and all kicking. High wind STRONGLY favors the running game and defense.
+        2.  **RAIN / SNOW:** These conditions make the ball slippery, increasing fumbles and dropped passes. This NEGATIVELY impacts passing offenses and favors teams with a strong running game.
+        3.  **FAVORABLE WEATHER (Dome, or <10 mph wind and no rain/snow):** This heavily favors passing offenses and the kicking game.
+        4.  **LOGIC:** You must explicitly state how the weather forecast (or lack thereof) is influencing your prediction, especially if it neutralizes a team's primary strength (e.g., high winds grounding a passing team).
 
         ## Data for Analysis:
         ### Team Standings ({YEAR}):
@@ -305,8 +310,9 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         ### Away Team - Healthy Player Stats ({YEAR}):
         {away_roster_stats.to_string()}
         ---
-        Based on your analysis of ONLY the data provided, provide your complete response as a single, valid JSON object with no markdown.
+        Based on your analysis of ONLY the data provided (including the AI Analysis Directives), provide your complete response as a single, valid JSON object with no markdown.
         Your response must contain keys for "game_prediction", "justification", "top_performers", and "touchdown_scorers".
+        - In "justification", you must explain HOW the weather forecast impacted your prediction.
         - In "top_performers", identify the 3-4 most impactful offensive players from EACH team.
         - For every 'confidence' field, you MUST provide an integer between 1 and 100.
 

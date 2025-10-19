@@ -402,7 +402,7 @@ def main():
         return
         
     team_map_df = dataframes['team_match']
-    master_team_map = {row[col]: row[col]: row['Full Name'] for _, row in team_map_df.iterrows() for col in team_map_df.columns if pd.notna(row[col]) and row[col]}
+    master_team_map = {row[col]: row['Full Name'] for _, row in team_map_df.iterrows() for col in team_map_df.columns if pd.notna(row[col]) and row[col]}
     
     team_name_columns = ['Tm', 'Team', 'Away Team', 'Home Team']
     for name, df in dataframes.items():

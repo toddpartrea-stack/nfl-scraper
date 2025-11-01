@@ -349,10 +349,148 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, current_week):
                 for player in top_performers:
                     stats = player.get("predicted_stats", {})
                     p_text = f"***{player.get('player_name', 'N/A')} ({player.get('team', 'N/A')}):**\n"
+                    # --- THIS IS THE CORRECTED BLOCK ---
                     if 'Passing Yards' in stats: p_text += f"** Passing Yards:** {stats.get('Passing Yards', 'N/A')} (Confidence: {stats.get('Passing Yards_confidence', 0)}%)\n"
                     if 'Rushing Yards' in stats: p_text += f"** Rushing Yards:** {stats.get('Rushing Yards', 'N/A')} (Confidence: {stats.get('Rushing Yards_confidence', 0)}%)\n"
                     if 'Receiving Yards' in stats: p_text += f"** Receiving Yards:** {stats.get('Receiving Yards', 'N/A')} (Confidence: {stats.get('Receiving Yards_confidence', 0)}%)\n"
                     if 'Passing TDs' in stats: p_text += f"** Passing TDs:** {stats.get('Passing TDs', 'N/A')} (Confidence: {stats.get('Passing TDs_confidence', 0)}%)\n"
                     if 'Rushing TDs' in stats: p_text += f"** Rushing TDs:** {stats.get('Rushing TDs', 'N/A')} (Confidence: {stats.get('Rushing TDs_confidence', 0)}%)\n"
                     if 'Receiving TDs' in stats: p_text += f"** Receiving TDs:** {stats.get('Receiving TDs', 'N/A')} (Confidence: {stats.get('Receiving TDs_confidence', 0)}%)\n"
-                    if 'Interceptions' in stats: p_text += f"** Interceptions:** {stats.get('Interceptions', 'N/A')} (Confidence: {stats.get('Interceptions_confidence',
+                    if 'Interceptions' in stats: p_text += f"** Interceptions:** {stats.get('Interceptions', 'N/A')} (Confidence: {stats.get('Interceptions_confidence', 0)}%)\n"
+                    # --- END CORRECTED BLOCK ---
+                    analysis_text += p_text + "\n"
+
+            analysis_text += f"**3. Touchdown Scorers:**\n"
+            for scorer in td_scorers:
+                player_name = scorer.get("player_name", "N/A")
+                confidence = scorer.get("confidence", 0)
+                analysis_text += f"** {player_name} (Confidence: {confidence}%)\n"
+            analysis_text += "\n"
+
+            analysis_text += f"**4. Justification:**\n{justification}"
+
+            worksheet.update(f'D{row_num}:F{row_num}', [[winner, score, analysis_text.strip()]])
+            print(f"    -> SUCCESS: Wrote formatted prediction for {away_team_full} vs {home_team_full}")
+        except Exception as e:
+            print(f"    -> ERROR: Could not generate or parse prediction: {e}")
+            if 'response' in locals() and hasattr(response, 'candidates') and response.candidates:
+                print(f"    -> AI Response Finish Reason: {response.candidates[0].finish_reason}")
+                print(f"    -> AI Response Safety Ratings: {response.candidates[0].safety_ratings}")
+        time.sleep(5)
+
+def main():
+    if not FOOTBALL_API_KEY:
+        print("❌ CRITICAL ERROR: AMERICAN_FOOTBALL_API_KEY secret not found.")
+        return
+    
+    print("Authenticating with Google Sheets...")
+    gc = get_gspread_client()
+    spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
+    
+    dataframes = {}
+    print("\nLoading all data from Google Sheet tabs...")
+    sheet_titles = [s.title for s in spreadsheet.worksheets()]
+    for title in sheet_titles:
+        if not title.startswith("Week_"):
+            print(f"  -> Loading '{title}'...")
+            worksheet = spreadsheet.worksheet(title)
+            data = worksheet.get_all_values()
+            if data and len(data) > 1:
+                df = pd.DataFrame(data[1:], columns=data[0])
+                if 'Player' in df.columns:
+                    df['Player_Normalized'] = df['Player'].apply(normalize_player_name)
+                dataframes[title] = df
+
+    print("\n--- Unifying Team Names Across All Data Sources ---")
+    if 'team_match' not in dataframes:
+        print("❌ CRITICAL ERROR: 'team_match' tab not found. Cannot unify team names.")
+        return
+        
+    team_map_df = dataframes['team_match']
+    master_team_map = {row[col]: row['Full Name'] for _, row in team_map_df.iterrows() for col in team_map_df.columns if pd.notna(row[col]) and row[col]}
+    
+    team_name_columns = ['Tm', 'Team', 'Away Team', 'Home Team']
+    for name, df in dataframes.items():
+        for col in team_name_columns:
+            if col in df.columns:
+                if col == 'Tm' or col == 'Team':
+                    df['Team_Full'] = df[col].map(master_team_map).fillna(df[col])
+                else:
+                    df[col] = df[col].map(master_team_map).fillna(df[col])
+        dataframes[name] = df
+    
+    player_stat_dfs = []
+    for sheet_name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']:
+        if sheet_name in dataframes:
+            player_stat_dfs.append(dataframes[sheet_name])
+    
+    if not player_stat_dfs:
+        print("❌ CRITICAL ERROR: No player stats tabs (O_Player_Passing, etc.) found.")
+        return
+        
+    dataframes['player_stats_current'] = pd.concat(player_stat_dfs, ignore_index=True)
+
+    # --- Load Schedule ---
+    if 'Schedule' not in dataframes:
+        print("❌ CRITICAL ERROR: 'Schedule' tab not found. Cannot determine games to predict.")
+        return
+    schedule_df = dataframes['Schedule']
+    
+    if 'Venue_Country' not in schedule_df.columns:
+        print("❌ CRITICAL ERROR: 'Schedule' tab is missing 'Venue_Country'.")
+        print("  -> Please re-run the 'pfr_scraper.py' script to update the sheet.")
+        return
+    
+    schedule_df = schedule_df[schedule_df['Date'] != 'Date'].copy()
+    datetime_str = schedule_df['Date'] + " " + schedule_df['Time']
+    schedule_df['datetime'] = pd.to_datetime(datetime_str, format='%Y-%m-%d %H:%M', errors='coerce').dt.tz_localize('UTC')
+    schedule_df.dropna(subset=['datetime'], inplace=True)
+    schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
+    schedule_df['GameID'] = pd.to_numeric(schedule_df['GameID'], errors='coerce') # Ensure GameID is numeric
+    schedule_df.dropna(subset=['Week', 'GameID'], inplace=True)
+    schedule_df['Week'] = schedule_df['Week'].astype(int)
+
+    # --- NEW: Load and Merge Betting Odds ---
+    if 'Betting_Odds' in dataframes:
+        print("  -> Loading and merging 'Betting_Odds'...")
+        betting_df = dataframes['Betting_Odds']
+        betting_df['GameID'] = pd.to_numeric(betting_df['GameID'], errors='coerce')
+        
+        # Merge odds into the schedule dataframe
+        schedule_df = pd.merge(schedule_df, betting_df, on='GameID', how='left')
+        
+        # Fill in missing odds with N/A
+        schedule_df['Consensus_Spread'] = schedule_df['Consensus_Spread'].fillna('N/A')
+        schedule_df['Over_Under'] = schedule_df['Over_Under'].fillna('N/A')
+    else:
+        print("  -> 'Betting_Odds' tab not found. Predictions will run without odds.")
+        schedule_df['Consensus_Spread'] = 'N/A'
+        schedule_df['Over_Under'] = 'N/A'
+        
+    dataframes['Schedule'] = schedule_df # Save the merged dataframe
+
+    # --- NEW: Calculate Current Week in main() ---
+    now_utc = datetime.now(timezone.utc)
+    current_week = 0
+    if MANUAL_WEEK_OVERRIDE:
+        current_week = MANUAL_WEEK_OVERRIDE
+    else:
+        future_games = schedule_df[schedule_df['datetime'] > now_utc]
+        if not future_games.empty:
+            current_week = int(future_games['Week'].min())
+
+    if not current_week:
+        print("  -> No future games found to predict.")
+        hide_data_sheets(spreadsheet, 0) # 0 signals no active week
+        print("\n✅ Prediction/Results script finished (no games to predict).")
+        return
+
+    print(f"\n--- Running PREDICTION mode for upcoming week: {current_week} ---")
+    run_prediction_mode(spreadsheet, dataframes, now_utc, current_week)
+
+    # --- NEW: Call hide_data_sheets with the current week ---
+    hide_data_sheets(spreadsheet, current_week)
+    print("\n✅ Prediction/Results script finished.")
+
+if __name__ == "__main__":
+    main()

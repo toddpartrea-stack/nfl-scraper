@@ -18,12 +18,10 @@ load_dotenv()
 SPREADSHEET_KEY = "1NPpxs5wMkDZ8LJhe5_AC3FXR_shMHxQsETdaiAJifio"
 FOOTBALL_API_KEY = os.getenv('AMERICAN_FOOTBALL_API_KEY')
 FOOTBALL_API_HOST = "v1.american-football.api-sports.io"
-# No weather API key needed!
 YEAR = 2025
 MANUAL_WEEK_OVERRIDE = None
 
 # --- TEAM LOCATION MAP (Latitude/Longitude) ---
-# Used as the coordinate source for the NWS API
 TEAM_LOCATION_MAP = {
     "Arizona Cardinals": {"lat": 33.5276, "lon": -112.2626},
     "Atlanta Falcons": {"lat": 33.7554, "lon": -84.4009},
@@ -87,7 +85,7 @@ def get_api_data(endpoint, params):
         print(f"  -> API request failed for endpoint '{endpoint}': {e}")
         return []
 
-# --- NEW: NWS WEATHER HELPER FUNCTION (FREE, NO KEY) ---
+# --- NWS WEATHER HELPER FUNCTION (FREE, NO KEY) ---
 def get_weather_forecast(city, country, home_team, game_datetime_utc):
     """
     Fetches weather for the game's specific venue using the free NWS API.
@@ -95,56 +93,44 @@ def get_weather_forecast(city, country, home_team, game_datetime_utc):
     Falls back to home team's default stadium coordinates.
     """
     
-    # NWS API is US-only. Check for known non-US countries.
     if country and country.lower() not in ["united states", "usa", "us", "n/a", "", None]:
         return f"Weather not available (non-US game: {city}, {country})"
     
-    # Check if game is within the 7-day forecast window
     now_utc = datetime.now(timezone.utc)
     days_until_game = (game_datetime_utc.date() - now_utc.date()).days
     
     if days_until_game < 0:
         return "Game has already passed."
-    if days_until_game > 6: # NWS provides 7 days, so 0-6 is valid
+    if days_until_game > 6:
         return "Forecast not yet available (game is >7 days away)."
 
-    # Get coordinates from our fallback map
     if home_team not in TEAM_LOCATION_MAP:
         return f"Weather not available (team '{home_team}' not in US stadium map)."
         
     coords = TEAM_LOCATION_MAP[home_team]
     lat, lon = coords['lat'], coords['lon']
     
-    # NWS API requires a User-Agent.
-    # You can customize this if you want, but a generic one is fine.
     headers = {
         "User-Agent": "NFL-Prediction-Script (github.com/google/generative-ai-docs)"
     }
     
     try:
-        # --- Step 1: Get the gridpoint URL from NWS ---
-        # This tells us *which* NWS office covers this lat/lon
         points_url = f"https://api.weather.gov/points/{lat:.4f},{lon:.4f}"
         response = requests.get(points_url, headers=headers, timeout=10)
         response.raise_for_status()
         grid_url = response.json()['properties']['forecast']
         
-        # --- Step 2: Get the actual forecast from that grid URL ---
         response = requests.get(grid_url, headers=headers, timeout=10)
         response.raise_for_status()
         forecast_data = response.json()
         
-        # --- Step 3: Parse the forecast periods to find the right day ---
         game_date = game_datetime_utc.date()
         
-        # NWS gives day/night periods. We need to find the one that matches our game time.
-        # We'll look for the first period that starts ON the game day.
         for period in forecast_data['properties']['periods']:
             period_start_time = datetime.fromisoformat(period['startTime'])
             
             if period_start_time.date() == game_date:
-                # Found the first period for the game day. This is our forecast.
-                period_name = period['name'] # e.g., "Sunday" or "Sunday Night"
+                period_name = period['name']
                 temp = period['temperature']
                 wind_speed = period['windSpeed']
                 short_forecast = period['shortForecast']
@@ -181,15 +167,29 @@ def find_or_create_row(worksheet, away_team, home_team, kickoff_str):
     worksheet.append_row([away_team, home_team, kickoff_str, '', '', ''])
     return len(all_sheet_data) + 1
 
-def hide_data_sheets(spreadsheet):
+# --- UPDATED HIDE SHEETS FUNCTION ---
+def hide_data_sheets(spreadsheet, current_week):
     print("\n--- Cleaning up spreadsheet visibility ---")
+    
+    # Define which sheets should ALWAYS be visible
+    latest_pred_sheet = f"Week_{current_week}_Predictions"
+    always_visible = [latest_pred_sheet, "Betting_Odds", "Todds Tab"]
+    
+    # If no week is active, 0 is passed, so the pred sheet won't match
+    if current_week == 0:
+        always_visible = ["Betting_Odds", "Todds Tab"]
+
     sheets = spreadsheet.worksheets()
     for sheet in sheets:
-        if sheet.title.startswith("Week_") or sheet.title == "Todds Tab":
-            try: sheet.show()
+        if sheet.title in always_visible:
+            try:
+                sheet.show()
+                print(f"  -> Showing '{sheet.title}'")
             except Exception: pass
         else:
-            try: sheet.hide()
+            try:
+                sheet.hide()
+                # print(f"  -> Hiding '{sheet.title}'") # Optional: for debugging
             except Exception: pass
 
 def clean_json_response(text):
@@ -198,22 +198,10 @@ def clean_json_response(text):
         return match.group(1)
     return text.strip()
 
-def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
+def run_prediction_mode(spreadsheet, dataframes, now_utc, current_week):
     eastern_tz = pytz.timezone('US/Eastern')
     schedule_df = dataframes['Schedule']
     
-    current_week = 0
-    if week_override:
-        current_week = week_override
-    else:
-        future_games = schedule_df[schedule_df['datetime'] > now_utc]
-        if not future_games.empty:
-            current_week = int(future_games['Week'].min())
-
-    if not current_week:
-        print("  -> No future games found to predict.")
-        return
-
     print(f"  -> Generating predictions for Week {current_week}")
     sheet_name = f"Week_{current_week}_Predictions"
     try:
@@ -250,7 +238,6 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         away_team_full, home_team_full = game['Away Team'], game['Home Team']
         game_time_utc = game['datetime']
         
-        # --- Get venue from schedule ---
         venue_city = game.get('Venue_City', 'N/A')
         venue_country = game.get('Venue_Country', 'N/A')
         
@@ -260,15 +247,18 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         kickoff_display_str = game_time_utc.astimezone(eastern_tz).strftime('%Y-%m-%d %I:%M %p %Z')
         row_num = find_or_create_row(worksheet, away_team_full, home_team_full, kickoff_display_str)
         
-        # --- Get live weather forecast using NWS API ---
+        # --- Get Weather ---
         print("  -> Fetching live weather forecast...")
         weather_forecast_str = get_weather_forecast(
-            venue_city, 
-            venue_country, 
-            home_team_full, # Used for lat/lon lookup
-            game_time_utc
+            venue_city, venue_country, home_team_full, game_time_utc
         )
         print(f"  -> Weather: {weather_forecast_str}")
+
+        # --- NEW: Get Betting Odds ---
+        spread = game.get('Consensus_Spread', 'N/A')
+        over_under = game.get('Over_Under', 'N/A')
+        betting_str = f"Spread: {spread} | Over/Under: {over_under}"
+        print(f"  -> Odds: {betting_str}")
         # --- END NEW ---
 
         home_depth_chart = depth_chart_df[depth_chart_df['Team_Full'] == home_team_full]
@@ -284,35 +274,42 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
         home_roster_stats = player_stats_current[player_stats_current['Player_Normalized'].isin(home_player_names_normalized)]
         away_roster_stats = player_stats_current[player_stats_current['Player_Normalized'].isin(away_player_names_normalized)]
 
-        # --- UPDATED PROMPT ---
+        # --- UPDATED PROMPT (with Weather Rules AND Betting) ---
         matchup_prompt = f"""
         You are an expert sports analyst and data scientist. Your task is to provide a detailed prediction analysis for an upcoming NFL game.
         **Your primary directive is to base your analysis exclusively on the data provided below. Do not use any prior knowledge.**
         Analyze the matchup between the {away_team_full} (Away) and {home_team_full} (Home).
         
         ## AI Analysis Directives:
-        You MUST follow these rules when analyzing the weather's impact:
-        1.  **HIGH WIND (20+ mph):** This is the most significant factor. High winds severely NEGATIVELY impact passing yards, passing accuracy (especially deep throws), and all kicking. High wind STRONGLY favors the running game and defense.
-        2.  **RAIN / SNOW:** These conditions make the ball slippery, increasing fumbles and dropped passes. This NEGATIVELY impacts passing offenses and favors teams with a strong running game.
-        3.  **FAVORABLE WEATHER (Dome, or <10 mph wind and no rain/snow):** This heavily favors passing offenses and the kicking game.
-        4.  **LOGIC:** You must explicitly state how the weather forecast (or lack thereof) is influencing your prediction, especially if it neutralizes a team's primary strength (e.g., high winds grounding a passing team).
+        You MUST follow these rules when analyzing the data:
+        1.  **WEATHER:**
+            * **HIGH WIND (20+ mph):** This is the most significant factor. High winds severely NEGATIVELY impact passing yards, passing accuracy (especially deep throws), and all kicking. High wind STRONGLY favors the running game and defense.
+            * **RAIN / SNOW:** These conditions make the ball slippery, increasing fumbles and dropped passes. This NEGATIVELY impacts passing offenses and favors teams with a strong running game.
+            * **FAVORABLE WEATHER (Dome, or <10 mph wind and no rain/snow):** This heavily favors passing offenses.
+        2.  **BETTING MARKET:**
+            * The Spread and Over/Under are a strong signal of the expected game script and outcome.
+            * You MUST factor this into your analysis (e.g., "The market expects a close, low-scoring game").
+        3.  **LOGIC:** You must explicitly state how the weather and betting markets are influencing your prediction, especially if they contradict (e.g., "The stats favor Team A, but the high winds neutralize their passing attack, which is why I'm picking Team B").
 
         ## Data for Analysis:
-        ### Team Standings ({YEAR}):
+        ### 1. Betting Market Consensus:
+        {betting_str}
+
+        ### 2. Team Standings ({YEAR}):
         {team_offense_df[team_offense_df['Team_Full'].isin([home_team_full, away_team_full])].to_string()}
         
-        ### Weather Forecast:
+        ### 3. Weather Forecast:
         {weather_forecast_str}
 
-        ### Home Team - Healthy Player Stats ({YEAR}):
+        ### 4. Home Team - Healthy Player Stats ({YEAR}):
         {home_roster_stats.to_string()}
 
-        ### Away Team - Healthy Player Stats ({YEAR}):
+        ### 5. Away Team - Healthy Player Stats ({YEAR}):
         {away_roster_stats.to_string()}
         ---
         Based on your analysis of ONLY the data provided (including the AI Analysis Directives), provide your complete response as a single, valid JSON object with no markdown.
         Your response must contain keys for "game_prediction", "justification", "top_performers", and "touchdown_scorers".
-        - In "justification", you must explain HOW the weather forecast impacted your prediction.
+        - In "justification", you must explain HOW the betting odds AND weather forecast impacted your prediction.
         - In "top_performers", identify the 3-4 most impactful offensive players from EACH team.
         - For every 'confidence' field, you MUST provide an integer between 1 and 100.
 
@@ -358,109 +355,4 @@ def run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=None):
                     if 'Passing TDs' in stats: p_text += f"** Passing TDs:** {stats.get('Passing TDs', 'N/A')} (Confidence: {stats.get('Passing TDs_confidence', 0)}%)\n"
                     if 'Rushing TDs' in stats: p_text += f"** Rushing TDs:** {stats.get('Rushing TDs', 'N/A')} (Confidence: {stats.get('Rushing TDs_confidence', 0)}%)\n"
                     if 'Receiving TDs' in stats: p_text += f"** Receiving TDs:** {stats.get('Receiving TDs', 'N/A')} (Confidence: {stats.get('Receiving TDs_confidence', 0)}%)\n"
-                    if 'Interceptions' in stats: p_text += f"** Interceptions:** {stats.get('Interceptions', 'N/A')} (Confidence: {stats.get('Interceptions_confidence', 0)}%)\n"
-                    analysis_text += p_text + "\n"
-
-            analysis_text += f"**3. Touchdown Scorers:**\n"
-            for scorer in td_scorers:
-                player_name = scorer.get("player_name", "N/A")
-                confidence = scorer.get("confidence", 0)
-                analysis_text += f"** {player_name} (Confidence: {confidence}%)\n"
-            analysis_text += "\n"
-
-            analysis_text += f"**4. Justification:**\n{justification}"
-
-            worksheet.update(f'D{row_num}:F{row_num}', [[winner, score, analysis_text.strip()]])
-            print(f"    -> SUCCESS: Wrote formatted prediction for {away_team_full} vs {home_team_full}")
-        except Exception as e:
-            print(f"    -> ERROR: Could not generate or parse prediction: {e}")
-            if 'response' in locals() and hasattr(response, 'candidates') and response.candidates:
-                print(f"    -> AI Response Finish Reason: {response.candidates[0].finish_reason}")
-                print(f"    -> AI Response Safety Ratings: {response.candidates[0].safety_ratings}")
-        time.sleep(5)
-
-def main():
-    if not FOOTBALL_API_KEY:
-        print("❌ CRITICAL ERROR: AMERICAN_FOOTBALL_API_KEY secret not found.")
-        return
-    
-    print("Authenticating with Google Sheets...")
-    gc = get_gspread_client()
-    spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
-    
-    dataframes = {}
-    print("\nLoading all data from Google Sheet tabs...")
-    sheet_titles = [s.title for s in spreadsheet.worksheets()]
-    for title in sheet_titles:
-        if not title.startswith("Week_"):
-            print(f"  -> Loading '{title}'...")
-            worksheet = spreadsheet.worksheet(title)
-            data = worksheet.get_all_values()
-            if data and len(data) > 1:
-                df = pd.DataFrame(data[1:], columns=data[0])
-                if 'Player' in df.columns:
-                    df['Player_Normalized'] = df['Player'].apply(normalize_player_name)
-                dataframes[title] = df
-
-    print("\n--- Unifying Team Names Across All Data Sources ---")
-    if 'team_match' not in dataframes:
-        print("❌ CRITICAL ERROR: 'team_match' tab not found. Cannot unify team names.")
-        return
-        
-    team_map_df = dataframes['team_match']
-    master_team_map = {row[col]: row['Full Name'] for _, row in team_map_df.iterrows() for col in team_map_df.columns if pd.notna(row[col]) and row[col]}
-    
-    team_name_columns = ['Tm', 'Team', 'Away Team', 'Home Team']
-    for name, df in dataframes.items():
-        for col in team_name_columns:
-            if col in df.columns:
-                if col == 'Tm' or col == 'Team':
-                    df['Team_Full'] = df[col].map(master_team_map).fillna(df[col])
-                else:
-                    df[col] = df[col].map(master_team_map).fillna(df[col])
-        dataframes[name] = df
-    
-    player_stat_dfs = []
-    for sheet_name in ['O_Player_Passing', 'O_Player_Rushing', 'O_Player_Receiving']:
-        if sheet_name in dataframes:
-            player_stat_dfs.append(dataframes[sheet_name])
-    
-    if not player_stat_dfs:
-        print("❌ CRITICAL ERROR: No player stats tabs (O_Player_Passing, etc.) found.")
-        return
-        
-    dataframes['player_stats_current'] = pd.concat(player_stat_dfs, ignore_index=True)
-
-
-    eastern_tz = pytz.timezone('US/Eastern')
-    now_utc = datetime.now(timezone.utc)
-    
-    if 'Schedule' not in dataframes:
-        print("❌ CRITICAL ERROR: 'Schedule' tab not found. Cannot determine games to predict.")
-        return
-        
-    schedule_df = dataframes['Schedule']
-    
-    # Check for the schedule columns we need for weather
-    if 'Venue_Country' not in schedule_df.columns:
-        print("❌ CRITICAL ERROR: 'Schedule' tab is missing 'Venue_Country'.")
-        print("  -> Please re-run the 'pfr_scraper.py' script from our previous conversation to update the sheet.")
-        return
-    
-    schedule_df = schedule_df[schedule_df['Date'] != 'Date'].copy()
-    datetime_str = schedule_df['Date'] + " " + schedule_df['Time']
-    schedule_df['datetime'] = pd.to_datetime(datetime_str, format='%Y-%m-%d %H:%M', errors='coerce').dt.tz_localize('UTC')
-    schedule_df.dropna(subset=['datetime'], inplace=True)
-    schedule_df['Week'] = pd.to_numeric(schedule_df['Week'], errors='coerce')
-    schedule_df.dropna(subset=['Week'], inplace=True)
-    schedule_df['Week'] = schedule_df['Week'].astype(int)
-    dataframes['Schedule'] = schedule_df
-
-    print("\n--- Running PREDICTION mode for upcoming week. ---")
-    run_prediction_mode(spreadsheet, dataframes, now_utc, week_override=MANUAL_WEEK_OVERRIDE)
-
-    hide_data_sheets(spreadsheet)
-    print("\n✅ Prediction/Results script finished.")
-
-if __name__ == "__main__":
-    main()
+                    if 'Interceptions' in stats: p_text += f"** Interceptions:** {stats.get('Interceptions', 'N/A')} (Confidence: {stats.get('Interceptions_confidence',

@@ -34,7 +34,7 @@ def write_to_sheet(spreadsheet, sheet_name, dataframe):
         worksheet.clear()
         time.sleep(1)
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=2000, cols=len(dataframe.columns))
+        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=len(dataframe) + 100, cols=len(dataframe.columns))
     
     dataframe = dataframe.astype(str).fillna('0')
     data_to_upload = [dataframe.columns.values.tolist()] + dataframe.values.tolist()
@@ -88,6 +88,7 @@ if __name__ == "__main__":
         exit()
 
     print(f"\n--- Fetching Official Schedule from API ({CURRENT_YEAR}) ---")
+    schedule_df = pd.DataFrame() # Initialize empty dataframe
     try:
         games_data = get_api_data("games", {"league": "1", "season": str(CURRENT_YEAR)})
         if games_data:
@@ -96,7 +97,7 @@ if __name__ == "__main__":
                 game_info = i.get('game', {})
                 date_info = game_info.get('date', {})
                 team_info = i.get('teams', {})
-                venue_info = game_info.get('venue', {}) # <-- Get venue object
+                venue_info = game_info.get('venue', {})
                 
                 schedule_list.append({
                     'GameID': game_info.get('id'),
@@ -105,14 +106,13 @@ if __name__ == "__main__":
                     'Time': date_info.get('time'),
                     'Away Team': team_info.get('away', {}).get('name'),
                     'Home Team': team_info.get('home', {}).get('name'),
-                    'Venue_City': venue_info.get('city'),     # <-- Get city
-                    'Venue_Country': venue_info.get('country') # <-- Get country
+                    'Venue_City': venue_info.get('city'),
+                    'Venue_Country': venue_info.get('country')
                 })
 
             schedule_df = pd.DataFrame(schedule_list)
             schedule_df = calculate_nfl_week(schedule_df)
             schedule_df = schedule_df[schedule_df['Week'] > 0].copy()
-            # Ensure new columns are included in the write
             cols = ['GameID', 'Week', 'Date', 'Time', 'Away Team', 'Home Team', 'Venue_City', 'Venue_Country']
             write_to_sheet(spreadsheet, "Schedule", schedule_df[cols])
     except Exception as e:
@@ -169,8 +169,8 @@ if __name__ == "__main__":
                 if not df_receiving.empty: df_receiving.drop_duplicates(subset=['Player'], keep='last', inplace=True)
 
                 write_to_sheet(spreadsheet, f"{prefix}O_Player_Passing", df_passing)
-                write_to_sheet(spreadsheet, f"{prefix}O_Player_Receiving", df_receiving)
                 write_to_sheet(spreadsheet, f"{prefix}O_Player_Rushing", df_rushing)
+                write_to_sheet(spreadsheet, f"{prefix}O_Player_Receiving", df_receiving)
         except Exception as e:
             print(f"❌ Could not process Player Stats for {year_to_fetch}: {e}")
             
@@ -201,5 +201,86 @@ if __name__ == "__main__":
             write_to_sheet(spreadsheet, "Depth_Charts", pd.DataFrame(all_players))
     except Exception as e:
         print(f"❌ Could not process Depth Charts: {e}")
+
+    # --- NEW: Fetch Betting Odds ---
+    print(f"\n--- Fetching Betting Odds from API ({CURRENT_YEAR}) ---")
+    try:
+        odds_data = get_api_data("odds", {"league": "1", "season": str(CURRENT_YEAR)})
+        parsed_odds_list = []
+        
+        # Get GameID -> TeamName mapping from the schedule_df we already built
+        # This is crucial to know who the spread applies to
+        if schedule_df.empty:
+             print("  -> ERROR: Schedule data is missing, cannot map odds to teams.")
+        else:
+            game_to_teams_map = schedule_df.set_index('GameID')[['Home Team', 'Away Team']].to_dict('index')
+
+            for game_odds in odds_data:
+                game_id = game_odds.get('game', {}).get('id')
+                
+                # Find the teams for this game
+                team_info = game_to_teams_map.get(str(game_id)) # Use string for lookup
+                if not team_info:
+                    continue # Skip odds if we don't know the teams for this game
+
+                home_team = team_info['Home Team']
+                away_team = team_info['Away Team']
+
+                if not game_odds.get('bookmakers'):
+                    continue
+                
+                # Just take the first bookmaker for simplicity
+                bookmaker = game_odds['bookmakers'][0]
+                
+                spread, over_under, home_spread, away_spread = "N/A", "N/A", "N/A", "N/A"
+
+                for bet in bookmaker.get('bets', []):
+                    if bet.get('name') == "Handicap":
+                        try:
+                            # The API returns two spread values
+                            val1 = bet['values'][0]['value']
+                            val2 = bet['values'][1]['value']
+                            
+                            # The 'value' from the API corresponds to the *Home Team* and *Away Team* in that order
+                            away_spread = f"{away_team} {val1}"
+                            home_spread = f"{home_team} {val2}"
+                            
+                            # Create a simple spread string
+                            if val2.startswith('-'):
+                                spread = f"{home_team} {val2}"
+                            else:
+                                spread = f"{away_team} {val1}"
+                        except (IndexError, KeyError):
+                            pass # Keep as "N/A"
+                    
+                    if bet.get('name') == "Total":
+                        try:
+                            # Find the "Over" value to get the total
+                            total_val = next(v['value'] for v in bet['values'] if v['value'].startswith('Over '))
+                            over_under = total_val.replace('Over ', '')
+                        except (StopIteration, IndexError, KeyError):
+                             try:
+                                 # Fallback if it's just a number
+                                 over_under = bet['values'][0]['value']
+                             except (IndexError, KeyError):
+                                 pass # Keep as "N/A"
+
+                parsed_odds_list.append({
+                    "GameID": game_id,
+                    "Home_Spread": home_spread,
+                    "Away_Spread": away_spread,
+                    "Consensus_Spread": spread,
+                    "Over_Under": over_under
+                })
+        
+        if parsed_odds_list:
+            odds_df = pd.DataFrame(parsed_odds_list)
+            write_to_sheet(spreadsheet, "Betting_Odds", odds_df)
+        else:
+            print("  -> No odds data was parsed.")
+
+    except Exception as e:
+        print(f"❌ Could not process Betting Odds: {e}")
+
         
     print("\n✅ Scraper script finished.")
